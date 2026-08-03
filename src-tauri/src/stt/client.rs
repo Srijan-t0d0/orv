@@ -10,7 +10,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 const BASE_URL: &str = "https://openrouter.ai/api/v1";
-const REFERER: &str = "https://github.com/openrouter-examples/openroutervoice";
+const REFERER: &str = "https://github.com/OpenRouterLabs/openroutervoice";
 const TITLE: &str = "OpenRouter Voice";
 
 #[derive(Clone)]

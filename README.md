@@ -86,6 +86,13 @@ tray icon, log in (or `export OPENROUTER_API_KEY`), bind a hotkey, dictate.
 | macOS | ✅ fully supported (primary target) |
 | Windows / Linux | ⚠️ core pipeline is portable; `platform/hid.rs` (side buttons), `platform/traffic.rs`, and overlay behavior need porting — see module docs |
 
+## License & attribution
+
+MIT — see [LICENSE](LICENSE). Voice activity detection uses the
+[Silero VAD](https://github.com/snakers4/silero-vad) v5 model (MIT), bundled
+via the [`voice_activity_detector`](https://github.com/nkeenan38/voice_activity_detector)
+crate (MIT); release builds redistribute the model weights.
+
 ## Privacy
 
 The global input listener is a **matcher, not a recorder**: key/button state is
