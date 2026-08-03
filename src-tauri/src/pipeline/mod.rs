@@ -1,0 +1,425 @@
+pub mod commands;
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::audio::{capture, encode, vad, TARGET_SAMPLE_RATE};
+use crate::stt::client::SttClient;
+use crate::stt::models::{Transport, MODELS};
+use crate::AppState;
+
+/// Monotonic id so the UI can correlate partial chunks with their final
+/// transcript.
+static UTTERANCE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Re-transcribe the accumulated hold-buffer this often for live preview.
+const ROLLING_INTERVAL: Duration = Duration::from_millis(1200);
+/// Cap the rolling buffer (2 min) so a stuck key can't grow unbounded.
+const MAX_HOLD_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 120;
+/// Overlay level-meter update cadence.
+const LEVEL_INTERVAL: Duration = Duration::from_millis(60);
+
+/// Running pipeline; dropping/stopping tears everything down.
+pub struct PipelineHandle {
+    stop: Arc<AtomicBool>,
+}
+
+impl PipelineHandle {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct TranscriptEvent {
+    id: u64,
+    text: String,
+    /// End-of-speech → text available, in ms (what the user actually feels).
+    total_ms: u64,
+    /// HTTP round-trip portion.
+    api_ms: u64,
+    audio_secs: f32,
+    model: String,
+}
+
+/// Live preview text. Each event carries the transcript of the ENTIRE hold
+/// so far — later events supersede earlier ones, which is what lets the
+/// preview self-correct as more context arrives.
+#[derive(Clone, Serialize)]
+struct PartialEvent {
+    id: u64,
+    text: String,
+}
+
+/// Microphone level for the overlay waveform (0.0–1.0).
+#[derive(Clone, Serialize)]
+struct LevelEvent {
+    level: f32,
+}
+
+#[derive(Clone, Serialize)]
+struct StatusEvent {
+    state: String, // "listening" | "speech" | "transcribing" | "stopped" | "error"
+    detail: Option<String>,
+}
+
+fn emit_status(app: &AppHandle, state: &str, detail: Option<String>) {
+    // The floating indicator tracks the pipeline lifecycle: visible from
+    // the moment listening starts; overlay.js requests hide after showing
+    // the final transcript (or immediately on stop with nothing pending).
+    match state {
+        "listening" | "speech" | "transcribing" => crate::overlay::show(app),
+        _ => {}
+    }
+    // Mirror state in the menu-bar tray (the app is usually windowless).
+    if let Some(tray) = app.try_state::<crate::tray::Tray>() {
+        tray.set_status(state);
+    }
+    let _ = app.emit(
+        "stt-status",
+        StatusEvent {
+            state: state.into(),
+            detail,
+        },
+    );
+}
+
+pub struct PipelineConfig {
+    pub api_key: String,
+    pub model: String,
+    pub device: Option<String>,
+    pub language: Option<String>,
+}
+
+/// Start listening using current settings. Callable from any thread
+/// (Tauri command or the global hotkey listener).
+pub fn start_impl(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut pipeline = state.pipeline.lock().unwrap();
+    if pipeline.is_some() {
+        eprintln!("[pipeline] start ignored: already listening");
+        return Err("already listening".into());
+    }
+    eprintln!("[pipeline] starting…");
+
+    let settings = state.settings.lock().unwrap().clone();
+    if settings.api_key.is_empty() {
+        emit_status(
+            app,
+            "error",
+            Some("no credentials — log in with OpenRouter or paste an API key in settings".into()),
+        );
+        return Err("no API key".into());
+    }
+
+    let handle = start(
+        app.clone(),
+        state.stt.clone(),
+        PipelineConfig {
+            api_key: settings.api_key,
+            model: settings.model,
+            device: settings.device,
+            language: settings.language,
+        },
+    )?;
+    *pipeline = Some(handle);
+    Ok(())
+}
+
+/// Stop listening if active. Returns true if a pipeline was stopped.
+pub fn stop_impl(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let mut pipeline = state.pipeline.lock().unwrap();
+    if let Some(handle) = pipeline.take() {
+        handle.stop();
+        true
+    } else {
+        false
+    }
+}
+
+/// Toggle listening — used by the device-wide hotkey.
+pub fn toggle(app: &AppHandle) {
+    if !stop_impl(app) {
+        let _ = start_impl(app);
+    }
+}
+
+/// Synthesize `text` into the focused application. Uses enigo's text entry
+/// (macOS: CGEvent keyboard events with a unicode payload), which types into
+/// any field that accepts keystrokes. Needs Accessibility permission.
+fn type_text(text: &str) {
+    use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
+    let text = text.to_string();
+    std::thread::spawn(move || match Enigo::new(&EnigoSettings::default()) {
+        Ok(mut enigo) => {
+            if let Err(e) = enigo.text(&text) {
+                eprintln!("[type] failed to type transcript: {e}");
+            } else {
+                eprintln!("[type] typed {} chars", text.chars().count());
+            }
+        }
+        Err(e) => eprintln!(
+            "[type] enigo init failed: {e} — grant Accessibility permission in \
+             System Settings → Privacy & Security"
+        ),
+    });
+}
+
+/// Spawn the capture → rolling-transcribe pipeline.
+///
+/// One listening session = ONE transcript (Whisper Flow model):
+/// - all audio from start to stop accumulates in a single buffer
+/// - while active, the full buffer is re-transcribed every ~1.2s and emitted
+///   as a partial — each pass re-hears everything, so corrections and
+///   amendments ("no wait, make that five") settle naturally as context grows
+/// - on stop, one final pass over the full buffer produces the transcript
+///   that is typed/emitted exactly once
+/// VAD is used only to detect whether any speech happened at all and for
+/// status ("speech" vs silence), never to split audio.
+pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<PipelineHandle, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = stop.clone();
+
+    let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
+
+    // Tokio runtime dedicated to in-flight transcription requests, so a slow
+    // response never blocks audio processing.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    std::thread::Builder::new()
+        .name("stt-pipeline".into())
+        .spawn(move || {
+            // Capture must be created on this thread (cpal streams are not Send
+            // on all platforms) and lives until the loop exits.
+            let capture_handle = match capture::start(cfg.device.as_deref(), audio_tx) {
+                Ok(h) => h,
+                Err(e) => {
+                    emit_status(&app, "error", Some(format!("audio capture: {e}")));
+                    return;
+                }
+            };
+
+            let mut resampler = match encode::StreamResampler::new(capture_handle.sample_rate) {
+                Ok(r) => r,
+                Err(e) => {
+                    emit_status(&app, "error", Some(format!("resampler: {e}")));
+                    return;
+                }
+            };
+
+            let mut speech_gate = match vad::Segmenter::new() {
+                Ok(s) => s,
+                Err(e) => {
+                    emit_status(&app, "error", Some(format!("VAD init: {e}")));
+                    return;
+                }
+            };
+
+            eprintln!(
+                "[pipeline] listening on '{}' @ {} Hz (model {})",
+                capture_handle.device_name,
+                resampler.input_rate(),
+                cfg.model
+            );
+            emit_status(
+                &app,
+                "listening",
+                Some(format!(
+                    "{} @ {} Hz",
+                    capture_handle.device_name,
+                    resampler.input_rate()
+                )),
+            );
+
+            let session_id = UTTERANCE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let started_at = Instant::now();
+            let mut hold_buffer: Vec<f32> = Vec::new();
+            let mut heard_speech = false;
+            let mut last_rolling = Instant::now();
+            let mut last_level = Instant::now();
+            // Serialize rolling requests: skip a tick if one is in flight.
+            let rolling_busy = Arc::new(AtomicBool::new(false));
+
+            loop {
+                if stop_thread.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                let chunk = match audio_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(c) => c,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                };
+
+                let samples_16k = resampler.process(&chunk);
+                if samples_16k.is_empty() {
+                    continue;
+                }
+
+                // Level meter for the overlay waveform (RMS over this chunk).
+                if last_level.elapsed() >= LEVEL_INTERVAL {
+                    last_level = Instant::now();
+                    let rms = (samples_16k.iter().map(|s| s * s).sum::<f32>()
+                        / samples_16k.len() as f32)
+                        .sqrt();
+                    // Perceptual-ish scaling: speech RMS is typically 0.02–0.2.
+                    let level = (rms * 8.0).min(1.0);
+                    let _ = app.emit("stt-level", LevelEvent { level });
+                }
+
+                // Speech gate: status + "did anything worth transcribing happen".
+                for event in speech_gate.push(&samples_16k) {
+                    if let vad::VadEvent::SpeechStart = event {
+                        if !heard_speech {
+                            eprintln!("[pipeline] VAD: speech detected");
+                        }
+                        heard_speech = true;
+                        emit_status(&app, "speech", None);
+                    }
+                }
+
+                if hold_buffer.len() < MAX_HOLD_SAMPLES {
+                    hold_buffer.extend_from_slice(&samples_16k);
+                }
+
+                // Rolling preview: re-transcribe the whole buffer so far.
+                if heard_speech
+                    && last_rolling.elapsed() >= ROLLING_INTERVAL
+                    && !rolling_busy.load(Ordering::SeqCst)
+                    && hold_buffer.len() > TARGET_SAMPLE_RATE as usize / 2
+                {
+                    last_rolling = Instant::now();
+                    rolling_busy.store(true, Ordering::SeqCst);
+                    let audio = hold_buffer.clone();
+                    let app2 = app.clone();
+                    let stt2 = stt.clone();
+                    let cfg_key = cfg.api_key.clone();
+                    let cfg_model = cfg.model.clone();
+                    let cfg_lang = cfg.language.clone();
+                    let busy = rolling_busy.clone();
+                    rt.spawn(async move {
+                        let secs = audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
+                        let wav = encode::wav_encode_16k(&audio);
+                        eprintln!("[stt] #{session_id} rolling pass ({secs:.1}s)");
+                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref()).await
+                        {
+                            Ok(t) => {
+                                let text = t.text.trim().to_string();
+                                if !text.is_empty() {
+                                    let _ = app2.emit(
+                                        "stt-partial",
+                                        PartialEvent {
+                                            id: session_id,
+                                            text,
+                                        },
+                                    );
+                                }
+                            }
+                            Err(e) => eprintln!("[stt] #{session_id} rolling pass failed: {e}"),
+                        }
+                        busy.store(false, Ordering::SeqCst);
+                    });
+                }
+            }
+
+            drop(capture_handle);
+            let audio_secs = hold_buffer.len() as f32 / TARGET_SAMPLE_RATE as f32;
+            eprintln!("[pipeline] stopped after {audio_secs:.2}s (speech: {heard_speech})");
+
+            // Final authoritative pass over the entire session.
+            if heard_speech && hold_buffer.len() > TARGET_SAMPLE_RATE as usize / 5 {
+                emit_status(&app, "transcribing", None);
+                let end_of_speech = Instant::now();
+                let wav = encode::wav_encode_16k(&hold_buffer);
+                eprintln!(
+                    "[stt] #{session_id} FINAL pass ({audio_secs:.2}s, {} KB) to {}",
+                    wav.len() / 1024,
+                    cfg.model
+                );
+                let result = rt.block_on(transcribe_any(
+                    &stt,
+                    &cfg.api_key,
+                    &cfg.model,
+                    &wav,
+                    audio_secs,
+                    cfg.language.as_deref(),
+                ));
+                match result {
+                    Ok(t) => {
+                        let text = t.text.trim().to_string();
+                        eprintln!(
+                            "[stt] #{session_id} final in {} ms: {:?}",
+                            t.api_ms,
+                            text.chars().take(80).collect::<String>()
+                        );
+                        if text.is_empty() {
+                            eprintln!("[stt] #{session_id} EMPTY final transcript");
+                        } else {
+                            let type_into_app =
+                                app.state::<AppState>().settings.lock().unwrap().type_into_app;
+                            if type_into_app {
+                                eprintln!("[stt] #{session_id} typing transcript into focused app");
+                                type_text(&text);
+                            }
+                            let _ = app.emit(
+                                "stt-transcript",
+                                TranscriptEvent {
+                                    id: session_id,
+                                    text,
+                                    total_ms: end_of_speech.elapsed().as_millis() as u64,
+                                    api_ms: t.api_ms,
+                                    audio_secs: t.audio_secs,
+                                    model: t.model,
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[stt] #{session_id} final FAILED: {e}");
+                        emit_status(&app, "error", Some(e));
+                    }
+                }
+            } else {
+                eprintln!("[pipeline] no speech in session — nothing to transcribe");
+            }
+
+            // Let any in-flight rolling request finish quietly.
+            rt.shutdown_timeout(Duration::from_secs(10));
+            let _ = started_at; // session length available if we want stats later
+            emit_status(&app, "stopped", None);
+        })
+        .map_err(|e| e.to_string())?;
+
+    Ok(PipelineHandle { stop })
+}
+
+/// Transcribe via whichever transport the model uses. Rolling preview
+/// ignores streaming deltas (each pass's full text is the preview).
+async fn transcribe_any(
+    stt: &SttClient,
+    api_key: &str,
+    model: &str,
+    wav: &[u8],
+    audio_secs: f32,
+    language: Option<&str>,
+) -> Result<crate::stt::client::Transcription, String> {
+    let streaming = MODELS
+        .iter()
+        .find(|m| m.id == model)
+        .map(|m| m.transport == Transport::ChatStream)
+        .unwrap_or(false);
+    if streaming {
+        stt.transcribe_streaming(api_key, model, wav, audio_secs, |_| {}).await
+    } else {
+        stt.transcribe(api_key, model, wav, audio_secs, language).await
+    }
+}

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenRouter Voice Overlay</title>
+  <style>
+    :root {
+      --ink: rgba(3, 8, 10, 0.94);
+      --border: rgba(252, 252, 254, 0.14);
+      --fg: #fcfcfe;
+      --muted: rgba(252, 252, 254, 0.63);
+      --volt: #c8ff00;
+      font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: transparent;
+      overflow: hidden;
+    }
+    body {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 8px;
+    }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      max-width: 100%;
+      min-height: 46px;
+      padding: 10px 18px;
+      border-radius: 16px;
+      background: var(--ink);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
+      opacity: 0;
+      transform: translateY(8px) scale(0.97);
+      transition: opacity 180ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+    }
+    .pill.visible { opacity: 1; transform: none; }
+
+    /* live waveform: canvas driven by real mic RMS levels */
+    canvas { flex: none; display: block; }
+
+    .text {
+      font-size: 13.5px;
+      line-height: 1.45;
+      color: var(--muted);
+      /* newest words stay visible: right-aligned single line */
+      white-space: nowrap;
+      overflow: hidden;
+      direction: rtl;      /* clip the LEFT side, keep the tail readable */
+      text-align: left;
+      min-width: 0;
+      max-width: 340px;
+    }
+    .text bdi { direction: ltr; unicode-bidi: isolate; }
+    .text.final { color: var(--fg); }
+    .text .hint { color: var(--muted); opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div id="pill" class="pill">
+    <canvas id="wave" width="76" height="26"></canvas>
+    <div id="text" class="text"><span class="hint">Listening…</span></div>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>
