@@ -1,14 +1,8 @@
 mod audio;
 mod auth;
 mod benchmark;
-#[cfg(target_os = "macos")]
-mod hid;
 mod history;
-mod hotkey;
-mod overlay;
-#[cfg(target_os = "macos")]
-mod traffic;
-mod tray;
+mod platform;
 mod pipeline;
 mod settings;
 mod stt;
@@ -38,7 +32,7 @@ pub fn run() {
     stt.prewarm();
 
     // Restore the saved hotkey bindings before the listener starts.
-    hotkey::set_bindings_from_settings(settings.hotkey.clone(), settings.enter_hotkey.clone());
+    platform::hotkey::set_bindings_from_settings(settings.hotkey.clone(), settings.enter_hotkey.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -57,20 +51,20 @@ pub fn run() {
             // The raw HID listener sees mouse side buttons that driver
             // software hides from the CGEvent layer.
             #[cfg(target_os = "macos")]
-            hid::spawn_listener();
-            hotkey::spawn_listener(app.handle().clone());
+            platform::hid::spawn_listener();
+            platform::hotkey::spawn_listener(app.handle().clone());
             // Center the macOS traffic lights in the custom header band.
             #[cfg(target_os = "macos")]
-            traffic::setup(app.handle());
+            platform::traffic::setup(app.handle());
             // Menu-bar presence — the app is primarily a background service.
-            tray::setup(app.handle())?;
+            platform::tray::setup(app.handle())?;
 
             let settings = app.state::<AppState>().settings.lock().unwrap().clone();
 
             // Background-first: start hidden in the tray so launch (or login)
             // never steals focus from whatever the user is doing.
             if settings.start_minimized {
-                tray::hide_main_window(app.handle());
+                platform::tray::hide_main_window(app.handle());
             }
 
             // Sync the login-item registration with the setting.
@@ -92,7 +86,7 @@ pub fn run() {
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    tray::hide_main_window(window.app_handle());
+                    platform::tray::hide_main_window(window.app_handle());
                 }
             }
         })

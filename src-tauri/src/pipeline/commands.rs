@@ -3,7 +3,7 @@
 use tauri::{AppHandle, State};
 
 use crate::audio::capture;
-use crate::hotkey;
+use crate::platform::hotkey;
 use crate::settings::Settings;
 use crate::stt::models::{SttModel, MODELS};
 use crate::AppState;
@@ -221,7 +221,7 @@ pub fn bench_clip_info() -> Option<f32> {
 /// Called by overlay.js once its fade-out animation finishes.
 #[tauri::command]
 pub fn overlay_hide(app: AppHandle) {
-    crate::overlay::hide(&app);
+    crate::platform::overlay::hide(&app);
 }
 
 /// Recent transcript history (oldest first) for rendering on startup.

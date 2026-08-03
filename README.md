@@ -1,73 +1,97 @@
 # OpenRouter Voice
 
-Example cross-platform desktop app demonstrating **ultra-low-latency speech-to-text**
-with the [OpenRouter API](https://openrouter.ai/docs/guides/overview/multimodal/stt),
-built with **Rust + Tauri 2**.
+**System-wide push-to-talk dictation, powered by the [OpenRouter API](https://openrouter.ai).**
+Hold a hotkey anywhere on your desktop, speak, release — your words appear at your
+cursor. Built with Rust + Tauri 2 as a reference app for OpenRouter's
+[speech-to-text endpoint](https://openrouter.ai/docs/guides/overview/multimodal/stt).
 
-## How it stays fast
+## Where to start reading
 
-OpenRouter's STT endpoint (`POST /api/v1/audio/transcriptions`) is request/response,
-so latency is won client-side:
-
-1. **VAD-gated segmentation** — Silero VAD runs on 32 ms frames; a request fires
-   ~350 ms after you stop talking, not after a fixed timer.
-2. **16 kHz mono WAV** — audio is downsampled before upload (~3x smaller payload).
-3. **Pre-warmed connection** — the TLS handshake to `openrouter.ai` is paid at app
-   startup and the pool is kept alive, so the first utterance is as fast as the tenth.
-4. **Non-blocking dispatch** — transcription requests run on a dedicated Tokio
-   runtime; a slow response never stalls audio capture or VAD.
-5. **Realtime-safe capture** — the cpal audio callback only downmixes and pushes to
-   a lock-free channel.
-
-The UI shows two numbers per utterance: **total** (end-of-speech → text on screen,
-what you actually feel) and **api** (HTTP round-trip).
-
-## Pipeline
-
-```
-cpal capture ──▶ resample to 16 kHz (rubato) ──▶ Silero VAD segmentation
-                                                        │ utterance
-                                                        ▼
-UI (Tauri events) ◀── transcript + latency ◀── OpenRouter /audio/transcriptions
-                                                (reqwest, warm pool, base64 WAV)
-```
-
-## Run it
-
-Prereqs: Rust stable, Node 18+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+| You want… | Read |
+|---|---|
+| The API call, minimally | [`src-tauri/examples/minimal.rs`](src-tauri/examples/minimal.rs) — mic → WAV → transcript in ~100 lines |
+| The full integration, explained | [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — transports, biasing, OAuth, model choice |
+| The integration code itself | [`src-tauri/src/stt/`](src-tauri/src/stt/) — client, model registry, vocabulary |
+| The desktop-app machinery | [`src-tauri/src/platform/`](src-tauri/src/platform/) — hotkeys, tray, overlay (no API code) |
 
 ```sh
-export OPENROUTER_API_KEY=sk-or-...   # or paste it in the in-app settings
+# smallest possible taste — record 5s, print the transcript
+export OPENROUTER_API_KEY=sk-or-...
+cd src-tauri && cargo run --example minimal
+```
+
+## Features
+
+- **Push-to-talk anywhere** — device-wide hotkey (keyboard or mouse side button);
+  hold to dictate, release to type the transcript into whatever app has focus,
+  optional second hotkey that presses Enter to send
+- **Rolling live preview** — while you hold, the whole utterance is re-transcribed
+  every ~1.2s into a floating overlay pill, so the text self-corrects as context grows
+- **16 models, benchmarked** — every dedicated STT model on OpenRouter plus
+  streaming-capable audio chat models, with real WER/RTFx/price data and an in-app
+  benchmark that ranks them by measured latency on *your* connection and voice
+- **Accuracy stack** — vocabulary biasing (Deepgram keyterms / Whisper prompts),
+  mis-hearing suggestions, filler-word removal, and an opt-in LLM correction pass
+- **Background service** — menu-bar tray, close-to-tray, launch at login,
+  starts hidden; the main window is optional
+- **OpenRouter OAuth** — "Log in with OpenRouter" (PKCE, loopback callback), or
+  paste an API key; credentials never reach the webview
+
+## Architecture
+
+```
+src-tauri/src/
+├── stt/             ★ the OpenRouter integration (start here)
+│   ├── client.rs       one-shot + SSE streaming transports, LLM cleanup, warm pool
+│   ├── models.rs       registry: WER/RTFx/price per model, transport routing
+│   └── vocab.rs        per-provider vocabulary biasing + suggestion mining
+├── audio/             capture (cpal) → resample (rubato) → VAD gate (Silero)
+├── pipeline/          session orchestration
+│   ├── mod.rs            hold-buffer, rolling re-transcription, dispatch
+│   ├── text.rs           filler cleanup, continuity, type-into-app
+│   └── commands.rs       Tauri command surface for the UI
+├── platform/          OS machinery — zero API code (skippable for API readers)
+│   ├── hotkey.rs         device-wide push-to-talk (poll + raw HID)
+│   ├── hid.rs            macOS IOHID mouse-button listener
+│   ├── tray.rs           menu-bar presence, background lifecycle
+│   ├── overlay.rs        floating dictation pill window
+│   └── traffic.rs        macOS traffic-light positioning
+├── auth.rs            OpenRouter OAuth PKCE (reusable in any native app)
+├── settings.rs / history.rs / benchmark.rs   persistence
+└── lib.rs             wiring
+ui/                    vanilla JS/CSS, no framework, no build step
+```
+
+Audio flows one direction: `audio → pipeline → stt → OpenRouter`. The only
+network calls in the codebase live in `stt/client.rs` and `auth.rs`.
+
+## Run the app
+
+Prereqs: Rust stable, Node 18+, [Tauri prerequisites](https://tauri.app/start/prerequisites/).
+
+```sh
 npm install
 npm run dev
 ```
 
-## Models
+First run: grant **Microphone** access, plus **Input Monitoring** and
+**Accessibility** (System Settings → Privacy & Security) for global hotkeys and
+type-into-app. The app starts in the **menu bar** — open the window from the
+tray icon, log in (or `export OPENROUTER_API_KEY`), bind a hotkey, dictate.
 
-A curated fastest-first list is built in (`src-tauri/src/stt/models.rs`) — switch
-between them live and compare measured latency:
+## Platform support
 
-| Model | Notes |
+| | Status |
 |---|---|
-| `deepgram/nova-3` | Purpose-built low-latency ASR (default) |
-| `nvidia/parakeet-tdt-0.6b-v3` | 600M params, extremely fast |
-| `mistralai/voxtral-mini-transcribe` | Accuracy/speed balance |
-| `qwen/qwen3-asr-flash-2026-02-10` | Ultra-cheap, multilingual |
-| `openai/gpt-4o-mini-transcribe` | Cost-efficient OpenAI |
-| `openai/whisper-large-v3-turbo` | 99+ languages |
+| macOS | ✅ fully supported (primary target) |
+| Windows / Linux | ⚠️ core pipeline is portable; `platform/hid.rs` (side buttons), `platform/traffic.rs`, and overlay behavior need porting — see module docs |
 
-Tip: set the 2-letter language hint (e.g. `en`) to skip auto-detect and shave latency.
+## Privacy
 
-## Layout
-
-```
-src-tauri/src/
-  audio/capture.rs   # cpal input → lock-free channel (realtime-safe)
-  audio/vad.rs       # Silero VAD, utterance segmentation + pre-roll/hangover
-  audio/encode.rs    # rubato resample → 16 kHz mono, in-memory WAV
-  stt/client.rs      # reqwest client, pre-warmed pool, latency measurement
-  stt/models.rs      # curated model registry
-  pipeline/          # orchestration + Tauri commands/events
-  settings.rs        # API key / model / device / language persistence
-ui/                  # thin vanilla JS frontend (transcript + latency readout)
-```
+The global input listener is a **matcher, not a recorder**: key/button state is
+compared against your two bindings and discarded — no keystroke history exists,
+in memory or on disk, and nothing but **microphone audio** (plus model id and
+optional vocabulary hints) is ever sent to OpenRouter. Logging deliberately
+excludes key identities and transcript contents. Local files: `settings.json`
+(preferences), `history.jsonl` (your transcripts, local only), `benchmark.wav`
+(your recorded reference clip).

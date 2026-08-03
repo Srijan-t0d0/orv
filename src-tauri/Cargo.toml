@@ -17,7 +17,7 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-pn
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
 
 # Audio pipeline

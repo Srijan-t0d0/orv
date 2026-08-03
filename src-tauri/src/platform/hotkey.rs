@@ -67,7 +67,7 @@ fn poll_mouse_buttons(_device: &DeviceState) -> [bool; MOUSE_BUTTONS] {
     const COMBINED_SESSION_STATE: i32 = 0;
     let mut out = [false; MOUSE_BUTTONS];
     for (i, slot) in out.iter_mut().enumerate() {
-        *slot = crate::hid::button_down(i)
+        *slot = crate::platform::hid::button_down(i)
             || unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, i as u32) };
     }
     out

@@ -86,7 +86,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     // Dedicated template icon (black + alpha): macOS recolors it for
     // light/dark menu bars. The full-color app icon would render as a blob.
-    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/tray.png"))?;
     let icon = TrayIconBuilder::with_id("main-tray")
         .icon(tray_icon)
         .icon_as_template(true) // adapts to light/dark menu bar on macOS
