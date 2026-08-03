@@ -30,6 +30,13 @@ struct TranscriptionRequest<'a> {
     input_audio: InputAudio<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
+    /// Decoder biasing for Whisper/GPT-4o-style models: a vocabulary
+    /// sentence nudges them toward the right spellings of technical terms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    /// Provider passthrough — Deepgram's keyterm biasing rides here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +58,10 @@ pub struct Transcription {
 /// editorialize.
 const CHAT_TRANSCRIBE_PROMPT: &str =
     "Transcribe this audio verbatim. Output only the transcript text, nothing else.";
+
+/// Model for the "Smart corrections" LLM cleanup pass: cheapest of the
+/// current Gemini Flash Lite line — ~a hundredth of a cent per dictation.
+const CLEANUP_MODEL: &str = "google/gemini-3.1-flash-lite";
 
 impl SttClient {
     pub fn new() -> Self {
@@ -87,8 +98,24 @@ impl SttClient {
         wav_bytes: &[u8],
         audio_secs: f32,
         language: Option<&str>,
+        vocab: &[String],
     ) -> Result<Transcription, String> {
         let data = base64::engine::general_purpose::STANDARD.encode(wav_bytes);
+
+        // Vocabulary biasing, in whichever dialect the model understands.
+        let (prompt, provider) = if vocab.is_empty() {
+            (None, None)
+        } else if model.starts_with("deepgram/") {
+            (
+                None,
+                Some(serde_json::json!({
+                    "options": { "deepgram": { "keyterm": super::vocab::keyterms(vocab) } }
+                })),
+            )
+        } else {
+            (Some(super::vocab::biasing_prompt(vocab)), None)
+        };
+
         let body = TranscriptionRequest {
             model,
             input_audio: InputAudio {
@@ -96,6 +123,8 @@ impl SttClient {
                 format: "wav",
             },
             language,
+            prompt,
+            provider,
         };
 
         let started = Instant::now();
@@ -208,5 +237,73 @@ impl SttClient {
             audio_secs,
             model: model.to_string(),
         })
+    }
+
+    /// "Smart corrections": context-aware cleanup of a finished transcript
+    /// by a fast LLM. Fixes what decoder biasing can't — homophones
+    /// (eye/I), OpenAI-vs-OpenAPI-class confusions — using the sentence's
+    /// meaning. Returns the original text unchanged on any error, so this
+    /// can never make a dictation worse than the raw transcript.
+    pub async fn smart_correct(
+        &self,
+        api_key: &str,
+        transcript: &str,
+        vocab: &[String],
+    ) -> Result<String, String> {
+        let vocab_line = if vocab.is_empty() {
+            String::new()
+        } else {
+            format!("\nKnown vocabulary: {}.", super::vocab::merged_terms(vocab).join(", "))
+        };
+        let body = serde_json::json!({
+            "model": CLEANUP_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": format!(
+                        "You fix speech-to-text transcription errors. Correct misheard \
+                         technical terms, homophones, and casing using sentence context. \
+                         Do NOT rephrase, summarize, or change the meaning or wording \
+                         beyond fixing recognition errors. Preserve the speaker's exact \
+                         phrasing. Output ONLY the corrected transcript.{vocab_line}"
+                    )
+                },
+                { "role": "user", "content": transcript }
+            ],
+            "temperature": 0.0
+        });
+
+        let resp = self
+            .http
+            .post(format!("{BASE_URL}/chat/completions"))
+            .bearer_auth(api_key)
+            .header("HTTP-Referer", REFERER)
+            .header("X-Title", TITLE)
+            .timeout(Duration::from_secs(6)) // cleanup must never stall dictation
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("cleanup request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("cleanup error {}", resp.status()));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("bad cleanup response: {e}"))?;
+        let corrected = json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        // Sanity guard: an empty or wildly different-length answer means the
+        // model editorialized — keep the raw transcript instead.
+        let ratio = corrected.len() as f32 / transcript.len().max(1) as f32;
+        if corrected.is_empty() || !(0.5..=1.6).contains(&ratio) {
+            return Err("cleanup output failed sanity check".into());
+        }
+        Ok(corrected)
     }
 }

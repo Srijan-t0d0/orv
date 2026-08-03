@@ -46,6 +46,11 @@ pub struct UiSettings {
     pub type_into_app: bool,
     pub start_minimized: bool,
     pub launch_at_login: bool,
+    pub clean_fillers: bool,
+    pub vocabulary: Vec<String>,
+    /// Built-in seed terms (read-only, shown for reference).
+    pub seed_count: usize,
+    pub smart_corrections: bool,
 }
 
 /// Mutable subset the webview is allowed to change.
@@ -58,6 +63,9 @@ pub struct UiSettingsPatch {
     pub type_into_app: Option<bool>,
     pub start_minimized: Option<bool>,
     pub launch_at_login: Option<bool>,
+    pub clean_fillers: Option<bool>,
+    pub vocabulary: Option<Vec<String>>,
+    pub smart_corrections: Option<bool>,
 }
 
 fn to_ui(settings: &Settings) -> UiSettings {
@@ -87,6 +95,10 @@ fn to_ui(settings: &Settings) -> UiSettings {
         type_into_app: settings.type_into_app,
         start_minimized: settings.start_minimized,
         launch_at_login: settings.launch_at_login,
+        clean_fillers: settings.clean_fillers,
+        vocabulary: settings.vocabulary.clone(),
+        seed_count: crate::stt::vocab::SEED_TERMS.len(),
+        smart_corrections: settings.smart_corrections,
     }
 }
 
@@ -117,6 +129,19 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: UiSetting
     }
     if let Some(minimized) = patch.start_minimized {
         settings.start_minimized = minimized;
+    }
+    if let Some(clean) = patch.clean_fillers {
+        settings.clean_fillers = clean;
+    }
+    if let Some(vocab) = patch.vocabulary {
+        settings.vocabulary = vocab
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+    }
+    if let Some(smart) = patch.smart_corrections {
+        settings.smart_corrections = smart;
     }
     if let Some(login) = patch.launch_at_login {
         settings.launch_at_login = login;
@@ -184,8 +209,8 @@ pub fn bench_record_stop(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn bench_run(app: AppHandle) -> Result<(), String> {
-    crate::benchmark::run(app)
+pub fn bench_run(app: AppHandle, models: Option<Vec<String>>) -> Result<(), String> {
+    crate::benchmark::run(app, models.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -197,6 +222,18 @@ pub fn bench_clip_info() -> Option<f32> {
 #[tauri::command]
 pub fn overlay_hide(app: AppHandle) {
     crate::overlay::hide(&app);
+}
+
+/// Recent transcript history (oldest first) for rendering on startup.
+#[tauri::command]
+pub fn get_history() -> Vec<crate::history::HistoryEntry> {
+    crate::history::load_recent()
+}
+
+/// Last completed benchmark run, if any (results survive restarts).
+#[tauri::command]
+pub fn get_last_benchmark() -> Option<crate::benchmark::BenchRun> {
+    crate::benchmark::load_last_run()
 }
 
 #[tauri::command]

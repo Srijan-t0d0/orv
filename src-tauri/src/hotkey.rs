@@ -257,6 +257,9 @@ fn dispatch(app: &AppHandle, action: Action) {
         }
         Action::Press(Target::Enter) => {
             eprintln!("[hotkey] synthesizing Enter");
+            // Message sent → next dictation starts a fresh field; don't
+            // prepend a joining space onto it.
+            crate::pipeline::reset_continuity();
             press_enter()
         }
         _ => {}
@@ -313,7 +316,23 @@ pub fn spawn_listener(app: AppHandle) {
                 prev_buttons = buttons;
 
                 for encoded in pressed {
-                    eprintln!("[hotkey] press: {encoded}");
+                    // PRIVACY: never log arbitrary key identities — only
+                    // events that match a binding (or capture mode) may be
+                    // logged further down. Key state is compared and
+                    // discarded; no keystroke history is kept or sent
+                    // anywhere. The only data that ever reaches the STT
+                    // model is microphone audio.
+                    //
+                    // Dictation continuity: a physical Enter (message sent)
+                    // or a left click (caret probably moved) between
+                    // dictations means the next transcript should NOT be
+                    // joined onto the previous one with a space.
+                    if encoded == "key:Enter"
+                        || encoded == "key:NumpadEnter"
+                        || encoded == encode_button(0)
+                    {
+                        crate::pipeline::reset_continuity();
+                    }
                     match on_press(encoded) {
                         Action::None => {}
                         Action::CaptureCancelled => {

@@ -16,6 +16,75 @@ use crate::AppState;
 /// transcript.
 static UTTERANCE_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// Dictation continuity: consecutive transcripts typed into the same field
+/// need a joining space ("…last one." + "And this…" → "…last one. And this…").
+/// Tracks the final char of the last typed transcript; cleared when Enter is
+/// synthesized (new message) or when it goes stale.
+static LAST_TYPED: std::sync::Mutex<Option<(char, Instant)>> = std::sync::Mutex::new(None);
+/// After this long, assume the user moved on (clicked elsewhere, edited by
+/// hand) and don't auto-join.
+const CONTINUITY_TTL: Duration = Duration::from_secs(90);
+
+/// Called by the hotkey module when Enter is synthesized — the message was
+/// sent, so the next dictation starts a fresh field.
+pub fn reset_continuity() {
+    *LAST_TYPED.lock().unwrap() = None;
+}
+
+/// Strip filler words and tidy the leftovers. STT models emit "Um," / "uh"
+/// as real tokens; standalone fillers are removed, then doubled separators
+/// and stranded punctuation are collapsed. Word-boundary-safe: "umbrella"
+/// and "Erm" inside quotes survive only if they're not bare filler tokens.
+fn clean_fillers(text: &str) -> String {
+    const FILLERS: &[&str] = &["um", "uh", "erm", "uhm", "umm", "uhh", "hmm", "hm", "mhm"];
+
+    // Tokenize on whitespace; a token is a filler if its alphabetic core
+    // (letters only, case-insensitive) matches the list.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut removed = 0usize;
+    for token in text.split_whitespace() {
+        let core: String = token
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        if FILLERS.contains(&core.as_str()) {
+            removed += 1;
+            // Keep the filler's trailing sentence-ending punctuation if the
+            // previous kept token lacks any ("Stop. Um. Next" → "Stop. Next";
+            // "so, um, yeah" → "so, yeah" handled by comma collapse below).
+            if token.ends_with(['.', '!', '?'])
+                && kept.last().is_some_and(|p| !p.ends_with(['.', '!', '?', ',']))
+            {
+                // Rare enough to not bother re-attaching; readability wins
+                // over preserving a period the filler owned.
+            }
+            continue;
+        }
+        kept.push(token);
+    }
+    if removed == 0 {
+        return text.to_string();
+    }
+
+    let mut out = kept.join(" ");
+    // Collapse separators stranded by removals: ", ," / ",  ," → ","
+    while out.contains(", ,") {
+        out = out.replace(", ,", ",");
+    }
+    while out.contains(",,") {
+        out = out.replace(",,", ",");
+    }
+    while out.contains("  ") {
+        out = out.replace("  ", " ");
+    }
+    // Sentence start stranded as ", Word" after "Um, word" removal is fine;
+    // but leading separators are not.
+    let out = out.trim_start_matches([',', ' ']).to_string();
+    eprintln!("[clean] removed {removed} filler token(s)");
+    out
+}
+
 /// Re-transcribe the accumulated hold-buffer this often for live preview.
 const ROLLING_INTERVAL: Duration = Duration::from_millis(1200);
 /// Cap the rolling buffer (2 min) so a stuck key can't grow unbounded.
@@ -61,6 +130,14 @@ struct LevelEvent {
     level: f32,
 }
 
+/// A likely mis-heard term found in a transcript, suggested for the
+/// user's vocabulary.
+#[derive(Clone, Serialize)]
+struct VocabSuggestion {
+    heard: String,
+    term: String,
+}
+
 #[derive(Clone, Serialize)]
 struct StatusEvent {
     state: String, // "listening" | "speech" | "transcribing" | "stopped" | "error"
@@ -93,6 +170,7 @@ pub struct PipelineConfig {
     pub model: String,
     pub device: Option<String>,
     pub language: Option<String>,
+    pub vocabulary: Vec<String>,
 }
 
 /// Start listening using current settings. Callable from any thread
@@ -124,6 +202,7 @@ pub fn start_impl(app: &AppHandle) -> Result<(), String> {
             model: settings.model,
             device: settings.device,
             language: settings.language,
+            vocabulary: settings.vocabulary,
         },
     )?;
     *pipeline = Some(handle);
@@ -152,9 +231,30 @@ pub fn toggle(app: &AppHandle) {
 /// Synthesize `text` into the focused application. Uses enigo's text entry
 /// (macOS: CGEvent keyboard events with a unicode payload), which types into
 /// any field that accepts keystrokes. Needs Accessibility permission.
+///
+/// Consecutive dictations join naturally: if the previous transcript ended
+/// without trailing whitespace and this one starts with a word/punctuation
+/// character, a single space is prepended.
 fn type_text(text: &str) {
     use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
-    let text = text.to_string();
+
+    let mut text = text.to_string();
+    {
+        let mut last = LAST_TYPED.lock().unwrap();
+        if let Some((last_char, at)) = *last {
+            let fresh = at.elapsed() < CONTINUITY_TTL;
+            let needs_space = fresh
+                && !last_char.is_whitespace()
+                && text.chars().next().is_some_and(|c| !c.is_whitespace());
+            if needs_space {
+                eprintln!("[type] joining onto previous dictation with a space");
+                text.insert(0, ' ');
+            }
+        }
+        if let Some(end) = text.chars().last() {
+            *last = Some((end, Instant::now()));
+        }
+    }
     std::thread::spawn(move || match Enigo::new(&EnigoSettings::default()) {
         Ok(mut enigo) => {
             if let Err(e) = enigo.text(&text) {
@@ -305,15 +405,19 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                     let cfg_key = cfg.api_key.clone();
                     let cfg_model = cfg.model.clone();
                     let cfg_lang = cfg.language.clone();
+                    let cfg_vocab = cfg.vocabulary.clone();
                     let busy = rolling_busy.clone();
                     rt.spawn(async move {
                         let secs = audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
                         let wav = encode::wav_encode_16k(&audio);
                         eprintln!("[stt] #{session_id} rolling pass ({secs:.1}s)");
-                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref()).await
+                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref(), &cfg_vocab).await
                         {
                             Ok(t) => {
-                                let text = t.text.trim().to_string();
+                                let mut text = t.text.trim().to_string();
+                                if app2.state::<AppState>().settings.lock().unwrap().clean_fillers {
+                                    text = clean_fillers(&text);
+                                }
                                 if !text.is_empty() {
                                     let _ = app2.emit(
                                         "stt-partial",
@@ -352,30 +456,81 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                     &wav,
                     audio_secs,
                     cfg.language.as_deref(),
+                    &cfg.vocabulary,
                 ));
                 match result {
                     Ok(t) => {
-                        let text = t.text.trim().to_string();
+                        let mut text = t.text.trim().to_string();
+                        let (do_clean, do_smart) = {
+                            let state = app.state::<AppState>();
+                            let s = state.settings.lock().unwrap();
+                            (s.clean_fillers, s.smart_corrections)
+                        };
+                        if do_clean {
+                            text = clean_fillers(&text);
+                        }
+                        // Smart corrections: context-aware LLM fixup for
+                        // homophones and tech terms. Falls back to the raw
+                        // transcript on any failure or timeout.
+                        if do_smart && !text.is_empty() {
+                            let started = Instant::now();
+                            match rt.block_on(stt.smart_correct(&cfg.api_key, &text, &cfg.vocabulary)) {
+                                Ok(corrected) => {
+                                    eprintln!(
+                                        "[smart] corrected in {} ms",
+                                        started.elapsed().as_millis()
+                                    );
+                                    text = corrected;
+                                }
+                                Err(e) => eprintln!("[smart] skipped: {e}"),
+                            }
+                        }
+                        // PRIVACY: log timing/length only, never transcript
+                        // content — dictations must not accumulate in logs.
                         eprintln!(
-                            "[stt] #{session_id} final in {} ms: {:?}",
+                            "[stt] #{session_id} final in {} ms ({} chars)",
                             t.api_ms,
-                            text.chars().take(80).collect::<String>()
+                            text.chars().count()
                         );
                         if text.is_empty() {
                             eprintln!("[stt] #{session_id} EMPTY final transcript");
                         } else {
+                            // Mine the transcript for probable mis-hearings
+                            // and surface them as vocabulary suggestions.
+                            let suggestions = crate::stt::vocab::suggest_terms(&text, &cfg.vocabulary);
+                            if !suggestions.is_empty() {
+                                eprintln!("[vocab] {} suggestion(s) from this transcript", suggestions.len());
+                                let payload: Vec<VocabSuggestion> = suggestions
+                                    .into_iter()
+                                    .map(|(heard, term)| VocabSuggestion { heard, term })
+                                    .collect();
+                                let _ = app.emit("vocab-suggestions", payload);
+                            }
                             let type_into_app =
                                 app.state::<AppState>().settings.lock().unwrap().type_into_app;
                             if type_into_app {
                                 eprintln!("[stt] #{session_id} typing transcript into focused app");
                                 type_text(&text);
                             }
+                            let total_ms = end_of_speech.elapsed().as_millis() as u64;
+                            // Durable history: survives restarts.
+                            crate::history::append(&crate::history::HistoryEntry {
+                                at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0),
+                                text: text.clone(),
+                                total_ms,
+                                api_ms: t.api_ms,
+                                audio_secs: t.audio_secs,
+                                model: t.model.clone(),
+                            });
                             let _ = app.emit(
                                 "stt-transcript",
                                 TranscriptEvent {
                                     id: session_id,
                                     text,
-                                    total_ms: end_of_speech.elapsed().as_millis() as u64,
+                                    total_ms,
                                     api_ms: t.api_ms,
                                     audio_secs: t.audio_secs,
                                     model: t.model,
@@ -411,6 +566,7 @@ async fn transcribe_any(
     wav: &[u8],
     audio_secs: f32,
     language: Option<&str>,
+    vocab: &[String],
 ) -> Result<crate::stt::client::Transcription, String> {
     let streaming = MODELS
         .iter()
@@ -420,6 +576,6 @@ async fn transcribe_any(
     if streaming {
         stt.transcribe_streaming(api_key, model, wav, audio_secs, |_| {}).await
     } else {
-        stt.transcribe(api_key, model, wav, audio_secs, language).await
+        stt.transcribe(api_key, model, wav, audio_secs, language, vocab).await
     }
 }

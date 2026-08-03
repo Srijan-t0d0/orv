@@ -31,7 +31,10 @@ const modelMenu = $("modelMenu");
 const deviceSel = $("device");
 const languageInput = $("language");
 const transcriptEl = $("transcript");
-const settingsPanel = $("settings");
+const viewMain = $("viewMain");
+const viewSettings = $("viewSettings");
+const gearIcon = $("gearIcon");
+const backIcon = $("backIcon");
 const credStateEl = $("credState");
 const apiKeyInput = $("apiKey");
 const loginBtn = $("loginBtn");
@@ -45,6 +48,12 @@ const enterHotkeyClear = $("enterHotkeyClear");
 const typeIntoApp = $("typeIntoApp");
 const launchAtLogin = $("launchAtLogin");
 const startMinimized = $("startMinimized");
+const cleanFillers = $("cleanFillers");
+const smartCorrections = $("smartCorrections");
+const vocabInput = $("vocabInput");
+const vocabSuggestions = $("vocabSuggestions");
+const sugChips = $("sugChips");
+const seedCount = $("seedCount");
 
 let listening = false;
 let models = [];
@@ -183,9 +192,9 @@ function renderModelBar() {
   if (live) modelLatEl.textContent = `${live} ms`;
 }
 
+// The menu renders inline in the sidebar directly under the picker.
 function openModelMenu() {
   renderModelMenu();
-  modelMenu.style.top = `${modelSelect.getBoundingClientRect().bottom + 6}px`;
   modelMenu.classList.remove("hidden");
   modelSelect.classList.add("open");
 }
@@ -197,9 +206,31 @@ function closeModelMenu() {
 
 modelSelect.addEventListener("click", () =>
   modelMenu.classList.contains("hidden") ? openModelMenu() : closeModelMenu());
-document.addEventListener("click", (e) => {
-  if (!modelMenu.contains(e.target) && !modelSelect.contains(e.target)) closeModelMenu();
-});
+
+/* ── view switching (main ⇄ settings) ─────────────────── */
+
+function setView(settings) {
+  viewMain.classList.toggle("on", !settings);
+  viewSettings.classList.toggle("on", settings);
+  gearIcon.classList.toggle("hidden", settings);
+  backIcon.classList.toggle("hidden", !settings);
+}
+
+$("settingsBtn").addEventListener("click", () =>
+  setView(!viewSettings.classList.contains("on")));
+
+for (const item of document.querySelectorAll(".nav-item")) {
+  item.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("on", n === item));
+    document.querySelectorAll(".panel-page").forEach((p) =>
+      p.classList.toggle("on", p.dataset.panel === item.dataset.panel));
+  });
+}
+
+function openSidebarPanel(panel) {
+  setView(true);
+  document.querySelector(`.nav-item[data-panel="${panel}"]`)?.click();
+}
 
 /* ── credentials & settings ───────────────────────────── */
 
@@ -246,11 +277,15 @@ function applySettings(s) {
   typeIntoApp.checked = s.type_into_app;
   launchAtLogin.checked = s.launch_at_login;
   startMinimized.checked = s.start_minimized;
+  cleanFillers.checked = s.clean_fillers;
+  smartCorrections.checked = s.smart_corrections;
+  vocabInput.value = (s.vocabulary || []).join(", ");
+  seedCount.textContent = s.seed_count;
   if (s.model) currentModel = s.model;
   renderModelBar();
   deviceSel.value = s.device ?? "";
   languageInput.value = s.language ?? "";
-  if (!s.has_credentials) settingsPanel.classList.remove("hidden");
+  if (!s.has_credentials) openSidebarPanel("credentials");
 }
 
 async function patchSettings() {
@@ -263,6 +298,9 @@ async function patchSettings() {
       type_into_app: typeIntoApp.checked,
       launch_at_login: launchAtLogin.checked,
       start_minimized: startMinimized.checked,
+      clean_fillers: cleanFillers.checked,
+      vocabulary: vocabInput.value.split(",").map((t) => t.trim()).filter(Boolean),
+      smart_corrections: smartCorrections.checked,
     },
   });
   renderCredentials(s);
@@ -270,12 +308,38 @@ async function patchSettings() {
 
 /* ── init ─────────────────────────────────────────────── */
 
+function renderHistory(entries) {
+  if (!entries.length) return;
+  clearPlaceholder();
+  for (const h of entries) {
+    const div = document.createElement("div");
+    div.className = "utterance history";
+    const when = new Date(h.at).toLocaleString([], {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+    div.innerHTML = `
+      <div class="text"></div>
+      <div class="meta">
+        <span>${when}</span>
+        <span class="latency">${h.total_ms} ms</span>
+        <span>${h.audio_secs.toFixed(1)}s audio</span>
+        <span>${h.model}</span>
+      </div>`;
+    div.querySelector(".text").textContent = h.text;
+    transcriptEl.appendChild(div);
+  }
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
 async function init() {
-  const [modelList, devices] = await Promise.all([
+  const [modelList, devices, history] = await Promise.all([
     invoke("list_models"),
     invoke("list_input_devices"),
+    invoke("get_history").catch(() => []),
   ]);
   models = modelList;
+  renderHistory(history);
+  renderBenchModelList();
 
   deviceSel.innerHTML =
     `<option value="">Default input</option>` +
@@ -301,7 +365,6 @@ toggleBtn.addEventListener("click", async () => {
   }
 });
 
-$("settingsBtn").addEventListener("click", () => settingsPanel.classList.toggle("hidden"));
 
 loginBtn.addEventListener("click", async () => {
   try {
@@ -347,9 +410,48 @@ modeSwitch.addEventListener("click", (e) => {
   patchSettings();
 });
 
-for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized]) {
+for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, vocabInput]) {
   el.addEventListener("change", patchSettings);
 }
+
+/* ── vocabulary suggestions ───────────────────────────── */
+
+// Suggestions accumulate across dictations (deduped) until accepted.
+const pendingSuggestions = new Map(); // term → heard
+
+function renderSuggestions() {
+  vocabSuggestions.classList.toggle("hidden", pendingSuggestions.size === 0);
+  sugChips.innerHTML = "";
+  for (const [term, heard] of pendingSuggestions) {
+    const chip = document.createElement("button");
+    chip.className = "sug-chip";
+    chip.title = `Heard as “${heard}” — click to add “${term}” to your vocabulary`;
+    chip.innerHTML = `+ ${term} <span class="heard">(${heard})</span>`;
+    chip.addEventListener("click", () => {
+      const terms = vocabInput.value.split(",").map((t) => t.trim()).filter(Boolean);
+      if (!terms.some((t) => t.toLowerCase() === term.toLowerCase())) {
+        terms.push(term);
+        vocabInput.value = terms.join(", ");
+        patchSettings();
+      }
+      pendingSuggestions.delete(term);
+      renderSuggestions();
+    });
+    sugChips.appendChild(chip);
+  }
+}
+
+listen("vocab-suggestions", (e) => {
+  const existing = new Set(
+    vocabInput.value.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)
+  );
+  for (const { heard, term } of e.payload) {
+    if (!existing.has(term.toLowerCase())) pendingSuggestions.set(term, heard);
+  }
+  renderSuggestions();
+  // Discoverability without stealing focus: badge the gear button.
+  $("settingsBtn").classList.toggle("has-suggestions", pendingSuggestions.size > 0);
+});
 
 /* ── backend events ───────────────────────────────────── */
 
@@ -393,7 +495,7 @@ listen("auth-status", async (e) => {
     loginBtn.disabled = false;
     if (state === "success") {
       applySettings(await invoke("get_settings"));
-      settingsPanel.classList.add("hidden");
+      setView(false);
       setStatus("stopped", "logged in — ready");
     } else if (state === "error") {
       addError(`login: ${detail}`);
@@ -407,11 +509,51 @@ const benchRecord = $("benchRecord");
 const benchRun = $("benchRun");
 const benchClipInfo = $("benchClipInfo");
 const benchResults = $("benchResults");
+const benchModelList = $("benchModelList");
+const benchModelCount = $("benchModelCount");
 let benchRecording = false;
 let benchRows = [];
+let benchClipSecs = 0;
+
+// Which models are included in a run (persisted locally; default: all).
+let benchSelection = new Set(
+  JSON.parse(localStorage.getItem("benchSelection") || "[]")
+);
+
+function benchSelectedIds() {
+  return models.filter((m) => benchSelection.size === 0 || benchSelection.has(m.id)).map((m) => m.id);
+}
+
+function renderBenchModelList() {
+  benchModelList.innerHTML = "";
+  for (const m of models) {
+    const included = benchSelection.size === 0 || benchSelection.has(m.id);
+    const label = document.createElement("label");
+    label.className = "check-row";
+    label.innerHTML = `<input type="checkbox" ${included ? "checked" : ""} data-id="${m.id}" /> ${m.name}`;
+    label.querySelector("input").addEventListener("change", () => {
+      // Materialize "all" into an explicit set on the first change.
+      if (benchSelection.size === 0) models.forEach((x) => benchSelection.add(x.id));
+      const cb = label.querySelector("input");
+      if (cb.checked) benchSelection.add(m.id);
+      else benchSelection.delete(m.id);
+      localStorage.setItem("benchSelection", JSON.stringify([...benchSelection]));
+      updateBenchCount();
+    });
+    benchModelList.appendChild(label);
+  }
+  updateBenchCount();
+}
+
+function updateBenchCount() {
+  const n = benchSelectedIds().length;
+  benchModelCount.textContent = `(${n}/${models.length})`;
+  benchRun.disabled = benchRun.disabled || n === 0;
+}
 
 function setClip(secs) {
   const has = typeof secs === "number" && secs > 0;
+  if (has) benchClipSecs = secs;
   benchClipInfo.textContent = has ? `clip: ${secs.toFixed(1)}s` : "no clip yet";
   benchRun.disabled = !has;
 }
@@ -433,22 +575,32 @@ benchRecord.addEventListener("click", async () => {
 
 benchRun.addEventListener("click", async () => {
   benchRows = [];
-  benchResults.innerHTML = models
-    .map((m) => `
-      <div class="bench-row pending" data-id="${m.id}">
+  const ids = benchSelectedIds();
+  benchResults.innerHTML = ids
+    .map((id) => {
+      const m = models.find((x) => x.id === id);
+      return `
+      <div class="bench-row pending" data-id="${id}">
         <span class="rank">·</span>
-        <span class="bname">${m.name}</span>
+        <span class="bname">${m?.name ?? id}</span>
         <span class="bbar" style="width:0"></span>
         <span class="bms">…</span>
-      </div>`)
+      </div>`;
+    })
     .join("");
   benchResults.classList.remove("hidden");
   try {
-    await invoke("bench_run");
+    await invoke("bench_run", { models: ids });
   } catch (e) {
     addError(String(e));
   }
 });
+
+// ms/s = milliseconds of processing per second of audio — clip-length
+// independent, so runs with different clips stay comparable.
+function msPerSec(r) {
+  return benchClipSecs > 0 ? Math.round(r.api_ms / benchClipSecs) : null;
+}
 
 function renderBenchRanking() {
   const done = benchRows.filter((r) => r.ok).sort((a, b) => a.api_ms - b.api_ms);
@@ -456,30 +608,35 @@ function renderBenchRanking() {
   // Reorder: completed (ranked fastest first), then pending, then failures.
   const failed = benchRows.filter((r) => !r.ok);
   const doneIds = new Set(benchRows.map((r) => r.model));
-  const pending = models.filter((m) => !doneIds.has(m.id));
+  const pending = benchSelectedIds().filter((id) => !doneIds.has(id));
 
   benchResults.innerHTML = [
     ...done.map((r, i) => {
       const m = models.find((x) => x.id === r.model);
+      const norm = msPerSec(r);
       return `
         <div class="bench-row${i === 0 ? " best" : ""}" data-id="${r.model}">
           <span class="rank">${i + 1}</span>
           <span class="bname">${m?.name ?? r.model}</span>
-          <span class="bbar" style="width:${Math.round((r.api_ms / maxMs) * 120)}px"></span>
+          <span class="bbar" style="width:${Math.round((r.api_ms / maxMs) * 90)}px"></span>
+          <span class="bnorm">${norm !== null ? norm + " ms/s" : ""}</span>
           <span class="bms">${r.api_ms} ms</span>
         </div>`;
     }),
-    ...pending.map((m) => `
-      <div class="bench-row pending" data-id="${m.id}">
-        <span class="rank">·</span><span class="bname">${m.name}</span>
-        <span class="bbar" style="width:0"></span><span class="bms">…</span>
-      </div>`),
+    ...pending.map((id) => {
+      const m = models.find((x) => x.id === id);
+      return `
+      <div class="bench-row pending" data-id="${id}">
+        <span class="rank">·</span><span class="bname">${m?.name ?? id}</span>
+        <span class="bbar" style="width:0"></span><span class="bnorm"></span><span class="bms">…</span>
+      </div>`;
+    }),
     ...failed.map((r) => {
       const m = models.find((x) => x.id === r.model);
       return `
         <div class="bench-row failed" data-id="${r.model}" title="${r.text.replaceAll('"', "&quot;")}">
           <span class="rank">✕</span><span class="bname">${m?.name ?? r.model}</span>
-          <span class="bbar" style="width:0"></span><span class="bms">failed</span>
+          <span class="bbar" style="width:0"></span><span class="bnorm"></span><span class="bms">failed</span>
         </div>`;
     }),
   ].join("");
@@ -521,5 +678,24 @@ listen("bench-result", (e) => {
 });
 
 invoke("bench_clip_info").then(setClip).catch(() => {});
+
+// Re-hydrate the last benchmark run: ranked results reappear after restart
+// and their measured latencies feed the model picker.
+invoke("get_last_benchmark")
+  .then((run) => {
+    if (!run || !run.results?.length) return;
+    benchRows = run.results;
+    benchClipSecs = run.clip_secs || 0;
+    for (const r of run.results) {
+      if (r.ok) {
+        const best = liveLatency.get(r.model);
+        if (!best || r.api_ms < best) liveLatency.set(r.model, r.api_ms);
+      }
+    }
+    renderBenchRanking();
+    benchResults.classList.remove("hidden");
+    renderModelBar();
+  })
+  .catch(() => {});
 
 init().catch((e) => addError(String(e)));

@@ -270,6 +270,22 @@ pub const MODELS: &[SttModel] = &[
         note: "Cheap streaming transcription via Gemini audio input.",
         suggested: false,
     },
+    SttModel {
+        id: "xiaomi/mimo-v2.5",
+        name: "Xiaomi MiMo-V2.5 (streaming)",
+        transport: Transport::ChatStream,
+        provider: "Xiaomi",
+        speed: 3,
+        quality: 3,
+        wer: "—",
+        rtfx: "—",
+        price: "~$0.05/hr",
+        languages: "Multilingual",
+        note: "Most-used audio-capable model on OpenRouter; omnimodal and very cheap.",
+        suggested: false,
+    },
+    // NOTE: nvidia/nemotron-3-nano-omni (free) was removed 2026-08-03 —
+    // the free variant 404s ("No endpoints available") when sent audio.
 ];
 
 pub const DEFAULT_MODEL: &str = "deepgram/nova-3";

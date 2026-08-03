@@ -7,8 +7,8 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <!-- header doubles as the (hidden) titlebar: draggable, traffic lights sit inline on macOS -->
+  <div class="app">
+    <!-- ═════════ persistent titlebar — never moves, never squeezed ═════════ -->
     <header data-tauri-drag-region>
       <div class="traffic-pad" aria-hidden="true"></div>
       <div class="brand">
@@ -20,41 +20,77 @@
       <div class="header-right">
         <div id="status" class="status stopped"><i class="dot"></i><span id="statusText">idle</span></div>
         <button id="settingsBtn" class="icon-btn" title="Settings">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+          <svg id="gearIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+          <svg id="backIcon" class="hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
       </div>
     </header>
 
-    <!-- ── hero mic ── -->
-    <section class="hero">
-      <button id="toggle" class="mic" title="Toggle listening">
-        <svg class="mic-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
-        <span class="ring"></span><span class="ring r2"></span>
-      </button>
-      <div class="hero-caption">
-        <span id="heroHint">Click to start listening</span>
-        <span id="hotkeyHint" class="hotkey-hint hidden">or press <kbd id="hotkeyKbd"></kbd> anywhere</span>
-      </div>
-    </section>
-
-    <!-- ── custom model dropdown (anchored to the picker in settings) ── -->
-    <div id="modelMenu" class="model-menu hidden"></div>
-
-    <!-- ── settings ── -->
-    <section id="settings" class="panel settings hidden">
-      <div class="settings-group">
-        <h2>Model</h2>
-        <div id="modelSelect" class="model-select" tabindex="0" title="Choose STT model">
-          <span id="modelName" class="model-name"></span>
-          <span id="modelLat" class="lat-chip hidden"></span>
-          <span class="flex-spacer"></span>
-          <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+    <!-- ═════════ view: main ═════════ -->
+    <div id="viewMain" class="view on">
+      <section class="hero">
+        <div class="mic-stage">
+          <button id="toggle" class="mic" title="Toggle listening">
+            <svg class="mic-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+            <span class="ring"></span><span class="ring r2"></span>
+          </button>
         </div>
-      </div>
+        <div class="hero-caption">
+          <span id="heroHint">Click to start listening</span>
+          <span id="hotkeyHint" class="hotkey-hint hidden">or hold <kbd id="hotkeyKbd"></kbd> anywhere</span>
+        </div>
+      </section>
 
-      <div class="settings-group">
-        <h2>Hotkeys</h2>
-        <div class="row hotkey-grid">
+      <section id="transcript" class="transcript">
+        <div class="placeholder">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+          <p>Speak — or hold your hotkey from any app.<br/>Utterances appear here with per-request latency.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═════════ view: settings ═════════ -->
+    <div id="viewSettings" class="view settings-view">
+      <nav class="side-nav">
+        <button class="nav-item on" data-panel="model">Model</button>
+        <button class="nav-item" data-panel="hotkeys">Hotkeys</button>
+        <button class="nav-item" data-panel="credentials">Account</button>
+        <button class="nav-item" data-panel="audio">Audio</button>
+        <button class="nav-item" data-panel="vocabulary">Vocabulary</button>
+        <button class="nav-item" data-panel="startup">Startup</button>
+      </nav>
+
+      <div class="side-content">
+        <!-- Model -->
+        <section class="panel-page on" data-panel="model">
+          <h2>Model</h2>
+          <div id="modelSelect" class="model-select" tabindex="0" title="Choose STT model">
+            <span id="modelName" class="model-name"></span>
+            <span id="modelLat" class="lat-chip hidden"></span>
+            <span class="flex-spacer"></span>
+            <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div id="modelMenu" class="model-menu hidden"></div>
+
+          <h2>Benchmark</h2>
+          <p class="hint">Record a reference clip, pick models, and rank them by measured
+            latency on your connection. ms/s = milliseconds per second of audio —
+            comparable across clips of different lengths.</p>
+          <div class="row">
+            <button id="benchRecord">● Record clip</button>
+            <span id="benchClipInfo" class="clip-info">no clip yet</span>
+          </div>
+          <details id="benchModels" class="bench-models">
+            <summary>Models to include <span id="benchModelCount"></span></summary>
+            <div id="benchModelList" class="bench-model-list"></div>
+          </details>
+          <button id="benchRun" class="primary" disabled>Run benchmark</button>
+          <div id="benchResults" class="bench-results hidden"></div>
+        </section>
+
+        <!-- Hotkeys -->
+        <section class="panel-page" data-panel="hotkeys">
+          <h2>Hotkeys</h2>
           <div class="field">
             <label>Speech-to-text</label>
             <div class="hotkey-row">
@@ -62,92 +98,99 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
                 <span id="hotkeyLabel">None</span>
               </button>
-              <div id="modeSwitch" class="mode-switch" title="Hold: listen while the key is held (push-to-talk). Toggle: press to start, press to stop.">
-                <button data-mode="push_to_talk" class="on">Hold</button>
-                <button data-mode="toggle">Toggle</button>
-              </div>
               <button id="hotkeyClear" class="icon-btn ghost hidden" title="Clear hotkey">✕</button>
+            </div>
+            <div id="modeSwitch" class="mode-switch" title="Hold: listen while held (push-to-talk). Toggle: press to start/stop.">
+              <button data-mode="push_to_talk" class="on">Hold</button>
+              <button data-mode="toggle">Toggle</button>
             </div>
           </div>
           <div class="field">
             <label>Send Enter</label>
             <div class="hotkey-row">
-              <button id="enterHotkeyBtn" class="hotkey" title="Click, then press any key or mouse button — presses Enter in the focused app, so you can send dictated messages without the keyboard">
+              <button id="enterHotkeyBtn" class="hotkey" title="Presses Enter in the focused app — send dictated messages without the keyboard">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
                 <span id="enterHotkeyLabel">None</span>
               </button>
               <button id="enterHotkeyClear" class="icon-btn ghost hidden" title="Clear hotkey">✕</button>
             </div>
           </div>
-        </div>
-        <p class="hint">Bindings are device-wide — e.g. Mouse 4 to dictate, Mouse 5 to send the message
-          with a synthesized Enter press.</p>
-        <label class="check-row">
-          <input type="checkbox" id="typeIntoApp" checked />
-          Type transcripts into the focused app (release the hotkey → words land at your cursor)
-        </label>
-      </div>
+          <p class="hint">Bindings are device-wide — e.g. Mouse 4 to dictate, Mouse 5 to send.</p>
+          <label class="check-row">
+            <input type="checkbox" id="typeIntoApp" checked />
+            Type transcripts into the focused app
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="cleanFillers" checked />
+            Remove filler words (um, uh, hmm)
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="smartCorrections" />
+            Smart corrections — LLM fixes homophones &amp; tech terms (~300ms slower)
+          </label>
+        </section>
 
-      <div class="settings-group">
-        <h2>Startup</h2>
-        <label class="check-row">
-          <input type="checkbox" id="launchAtLogin" />
-          Launch at login
-        </label>
-        <label class="check-row">
-          <input type="checkbox" id="startMinimized" checked />
-          Start hidden in the menu bar (window never steals focus)
-        </label>
-      </div>
-      <div class="settings-group">
-        <h2>Credentials</h2>
-        <div id="credState" class="cred-state"></div>
-        <div class="row">
+        <!-- Credentials -->
+        <section class="panel-page" data-panel="credentials">
+          <h2>Account</h2>
+          <div id="credState" class="cred-state"></div>
           <button id="loginBtn" class="primary">Log in with OpenRouter</button>
-          <span class="or">or</span>
-          <input id="apiKey" type="password" placeholder="paste API key sk-or-…" />
-          <button id="saveKey">Save key</button>
-          <button id="logoutBtn" class="danger hidden">Disconnect</button>
-        </div>
-        <p class="hint">Login opens your browser and creates an app-scoped key via OAuth (PKCE).
-          Keys are stored locally and never shown to this window.</p>
-      </div>
-      <div class="settings-group">
-        <h2>Audio</h2>
-        <div class="row">
-          <div class="field grow">
+          <div class="or-divider"><span>or</span></div>
+          <div class="field">
+            <label>API key</label>
+            <input id="apiKey" type="password" placeholder="sk-or-…" />
+          </div>
+          <div class="row">
+            <button id="saveKey">Save key</button>
+            <button id="logoutBtn" class="danger hidden">Disconnect</button>
+          </div>
+          <p class="hint">Login opens your browser and creates an app-scoped key via OAuth (PKCE).
+            Keys are stored locally and never shown to this window.</p>
+        </section>
+
+        <!-- Audio -->
+        <section class="panel-page" data-panel="audio">
+          <h2>Audio</h2>
+          <div class="field">
             <label for="device">Microphone</label>
             <select id="device"></select>
           </div>
           <div class="field">
-            <label for="language">Language</label>
+            <label for="language">Language hint</label>
             <input id="language" type="text" maxlength="2" placeholder="auto"
                    title="Optional ISO-639-1 hint (e.g. en) — skips auto-detect for lower latency" />
           </div>
-        </div>
-      </div>
+        </section>
 
-      <div class="settings-group">
-        <h2>Benchmark</h2>
-        <p class="hint">Record a reference clip with your mic, then run it through every model
-          to rank them by real measured latency on your connection.</p>
-        <div class="row">
-          <button id="benchRecord">● Record clip</button>
-          <span id="benchClipInfo" class="clip-info">no clip yet</span>
-          <button id="benchRun" class="primary" disabled>Run benchmark</button>
-        </div>
-        <div id="benchResults" class="bench-results hidden"></div>
-      </div>
-    </section>
+        <!-- Vocabulary -->
+        <section class="panel-page" data-panel="vocabulary">
+          <h2>Vocabulary</h2>
+          <p class="hint">Technical terms are sent to the model as recognition hints
+            (<span id="seedCount">0</span> built in). Add product names, jargon, or names,
+            comma-separated.</p>
+          <textarea id="vocabInput" rows="4" placeholder="Acme Corp, MyProduct, Kowalski, …"></textarea>
+          <div id="vocabSuggestions" class="vocab-suggestions hidden">
+            <span class="sug-label">Suggested from your dictations:</span>
+            <span id="sugChips"></span>
+          </div>
+        </section>
 
-    <!-- ── transcript ── -->
-    <section id="transcript" class="transcript">
-      <div class="placeholder">
-        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
-        <p>Speak — or press your hotkey from any app.<br/>Utterances appear here with per-request latency.</p>
+        <!-- Startup -->
+        <section class="panel-page" data-panel="startup">
+          <h2>Startup</h2>
+          <label class="check-row">
+            <input type="checkbox" id="launchAtLogin" />
+            Launch at login
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="startMinimized" checked />
+            Start hidden in the menu bar
+          </label>
+        </section>
+
       </div>
-    </section>
-  </main>
+    </div>
+  </div>
 
   <script src="main.js"></script>
 </body>

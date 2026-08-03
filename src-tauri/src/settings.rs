@@ -33,6 +33,15 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Register as a login item.
     pub launch_at_login: bool,
+    /// Strip filler words (um, uh, …) from transcripts before typing.
+    pub clean_fillers: bool,
+    /// User vocabulary terms, merged with the built-in seed list and sent
+    /// as model biasing (Deepgram keyterms / Whisper prompt).
+    pub vocabulary: Vec<String>,
+    /// Smart corrections: run the final transcript through a fast LLM to
+    /// fix homophones and tech terms using context. Adds ~300ms + a
+    /// fraction of a cent per dictation. Off by default (latency-first).
+    pub smart_corrections: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +59,9 @@ impl Default for Settings {
             type_into_app: true,
             start_minimized: true,
             launch_at_login: false,
+            clean_fillers: true,
+            vocabulary: Vec::new(),
+            smart_corrections: false,
         }
     }
 }

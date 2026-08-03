@@ -3,6 +3,7 @@ mod auth;
 mod benchmark;
 #[cfg(target_os = "macos")]
 mod hid;
+mod history;
 mod hotkey;
 mod overlay;
 #[cfg(target_os = "macos")]
@@ -112,6 +113,8 @@ pub fn run() {
             pipeline::commands::bench_run,
             pipeline::commands::bench_clip_info,
             pipeline::commands::overlay_hide,
+            pipeline::commands::get_history,
+            pipeline::commands::get_last_benchmark,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

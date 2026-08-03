@@ -3,8 +3,9 @@
 // stream as the main window.
 //
 // The waveform is REAL: the pipeline emits stt-level (mic RMS, 0..1) at
-// ~16Hz; we keep a scrolling history and draw it as bars, so the display
-// moves exactly with your voice.
+// ~16Hz. Bars stay IN PLACE (no scrolling) and breathe with the level —
+// same feel as the animated logo in the dashboard header: each bar has its
+// own phase/weight, all driven by the live mic level.
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -14,40 +15,46 @@ const textEl = document.getElementById("text");
 const canvas = document.getElementById("wave");
 const ctx = canvas.getContext("2d");
 
-const BARS = 14;
-const levels = new Array(BARS).fill(0);
-let target = 0; // most recent mic level
-let hideTimer = null;
+const BARS = 5;
+// Static per-bar character, like the logo's staggered bars.
+const WEIGHT = [0.55, 1.0, 0.75, 0.9, 0.6];
+const PHASE = [0.0, 1.3, 2.6, 3.9, 5.2];
+
+let level = 0;        // latest mic RMS (0..1), decays between events
+let smooth = 0;       // eased level for fluid motion
 let active = false;
+let hideTimer = null;
 let raf = null;
 
 /* ── waveform ─────────────────────────────────────────── */
 
-function drawWave() {
+function drawWave(now) {
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  const bw = 3, gap = (w - BARS * bw) / (BARS - 1);
+
+  // Ease toward the live level; decay so bars settle when you pause.
+  smooth += (level - smooth) * 0.25;
+  level *= 0.94;
+
+  const bw = 4;
+  const gap = (w - BARS * bw) / (BARS - 1);
+  const t = now / 1000;
   for (let i = 0; i < BARS; i++) {
-    // 0.12 floor keeps a visible idle baseline
-    const v = Math.max(0.12, levels[i]);
-    const bh = Math.max(2, v * h);
+    // Idle: gentle logo-like sway. Speaking: level drives the amplitude,
+    // per-bar sine phase keeps them dancing out of step.
+    const idle = 0.16 + 0.06 * Math.sin(t * 2.2 + PHASE[i]);
+    const drive = smooth * (0.45 + 0.55 * Math.abs(Math.sin(t * 7 + PHASE[i]))) * WEIGHT[i];
+    const v = Math.min(1, idle + drive);
+    const bh = Math.max(3, v * h);
     const x = i * (bw + gap);
-    const y = (h - bh) / 2;
-    ctx.fillStyle = levels[i] > 0.14 ? "#c8ff00" : "rgba(252,252,254,0.35)";
+    const y = (h - bh) / 2; // grow from the vertical center
+    ctx.fillStyle = smooth > 0.06 ? "#c8ff00" : "rgba(252,252,254,0.4)";
     ctx.beginPath();
-    ctx.roundRect(x, y, bw, bh, 1.5);
+    ctx.roundRect(x, y, bw, bh, 2);
     ctx.fill();
   }
-}
 
-function tick() {
-  // scroll history left, append the newest level (with a little decay
-  // easing so single spikes still render as humps)
-  levels.shift();
-  const prev = levels[levels.length - 1] ?? 0;
-  levels.push(Math.max(target, prev * 0.55));
-  drawWave();
-  raf = active ? requestAnimationFrame(() => setTimeout(tick, 40)) : null;
+  if (active) raf = requestAnimationFrame(drawWave);
 }
 
 /* ── text ─────────────────────────────────────────────── */
@@ -74,8 +81,8 @@ function show() {
   clearTimeout(hideTimer);
   if (!active) {
     active = true;
-    levels.fill(0);
-    tick();
+    smooth = 0;
+    raf = requestAnimationFrame(drawWave);
   }
   pill.classList.add("visible");
 }
@@ -95,7 +102,7 @@ function scheduleHide(delayMs) {
 /* ── events ───────────────────────────────────────────── */
 
 listen("stt-level", (e) => {
-  target = e.payload.level;
+  level = Math.max(level, e.payload.level);
 });
 
 listen("stt-status", (e) => {
@@ -110,7 +117,6 @@ listen("stt-status", (e) => {
       break;
     case "transcribing":
       show();
-      target = 0;
       setText("Transcribing…", false, true);
       break;
     case "stopped":
