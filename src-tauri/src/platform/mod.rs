@@ -19,6 +19,8 @@ pub mod tray;
 #[cfg(target_os = "macos")]
 pub mod hid;
 #[cfg(target_os = "macos")]
+mod hotkey_tap;
+#[cfg(target_os = "macos")]
 pub mod traffic;
 #[cfg(target_os = "macos")]
 pub mod paste;

@@ -14,6 +14,9 @@ The upstream is a reference app; this fork adds fixes tested in everyday dictati
 - Paste with Cmd+V instead of Unicode keyboard-event text injection. Back up all clipboard
   item types and restore them unless the clipboard changed during the paste.
 - Check the running process's Accessibility access and report insertion failures in logs.
+- Consume bound F13–F20 hotkeys on macOS so mouse-emitted function keys do not type
+  private-use glyphs into the focused app. Capture also consumes those keys. Ordinary
+  keys and mouse buttons retain polling behavior; they are not suppressed.
 - Include a native macOS icon so `npm run build -- --bundles app` works without local overrides.
 
 Settings live at `~/Library/Application Support/openroutervoice/settings.json` on macOS.

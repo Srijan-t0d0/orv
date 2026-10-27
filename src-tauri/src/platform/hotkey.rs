@@ -1,10 +1,10 @@
 //! Device-wide hotkey support (keyboard *and* mouse buttons).
 //!
-//! Implementation: a 25 ms polling loop over `device_query`. Polling (rather
-//! than an OS event tap) is deliberate — rdev's CGEventTap callback crashes
-//! on modern macOS by calling TSM keyboard-layout APIs off the main queue
-//! (dispatch_assert_queue → SIGTRAP). Polled state via CGEventSourceKeyState
-//! is thread-safe, and 25 ms is imperceptible for a toggle key.
+//! Implementation: a 25 ms polling loop over `device_query`, plus a native
+//! macOS tap that consumes bound F13–F20 keys and queues their down/up edges.
+//! That callback reads numeric keycodes only: rdev's layout conversion calls
+//! TSM off the main queue and crashes on modern macOS. Consumed keys must not
+//! rely on CGEventSourceKeyState polling to deliver dictation transitions.
 //!
 //! Modes:
 //!   - capture: the next key/button press becomes the new binding
@@ -101,12 +101,14 @@ struct ListenerState {
     stt_binding: Option<String>,
     enter_binding: Option<String>,
     capturing: Option<Target>,
+    pressed_stt: Option<String>,
 }
 
 static STATE: Mutex<ListenerState> = Mutex::new(ListenerState {
     stt_binding: None,
     enter_binding: None,
     capturing: None,
+    pressed_stt: None,
 });
 static LISTENER_RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -128,9 +130,24 @@ fn emit_binding(app: &AppHandle, target: Target, binding: Option<&str>) {
     );
 }
 
+fn sync_suppression(st: &ListenerState) {
+    #[cfg(target_os = "macos")]
+    super::hotkey_tap::configure(
+        st.stt_binding.as_deref(),
+        st.enter_binding.as_deref(),
+        st.capturing.is_some(),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let _ = st;
+}
+
 /// Begin capture mode: the next key or mouse press becomes `target`'s binding.
 pub fn begin_capture(app: &AppHandle, target: Target) {
-    STATE.lock().unwrap().capturing = Some(target);
+    {
+        let mut st = STATE.lock().unwrap();
+        st.capturing = Some(target);
+        sync_suppression(&st);
+    }
     let _ = app.emit("hotkey-capturing", target);
 }
 
@@ -143,6 +160,7 @@ pub fn clear(app: &AppHandle, target: Target) {
             Target::Enter => st.enter_binding = None,
         }
         st.capturing = None;
+        sync_suppression(&st);
     }
     persist(app, target, None);
     emit_binding(app, target, None);
@@ -152,6 +170,7 @@ pub fn set_bindings_from_settings(stt: Option<String>, enter: Option<String>) {
     let mut st = STATE.lock().unwrap();
     st.stt_binding = stt;
     st.enter_binding = enter;
+    sync_suppression(&st);
 }
 
 fn persist(app: &AppHandle, target: Target, binding: Option<String>) {
@@ -188,7 +207,7 @@ enum Action {
 /// input doesn't retrigger because we only act on newly-pressed inputs.
 fn on_press(encoded: String) -> Action {
     let mut st = STATE.lock().unwrap();
-    if let Some(target) = st.capturing {
+    let action = if let Some(target) = st.capturing {
         if encoded == "key:Escape" {
             st.capturing = None;
             Action::CaptureCancelled
@@ -215,17 +234,23 @@ fn on_press(encoded: String) -> Action {
             Action::Captured(target, encoded)
         }
     } else if st.stt_binding.as_deref() == Some(encoded.as_str()) {
+        st.pressed_stt = Some(encoded);
         Action::Press(Target::Stt)
     } else if st.enter_binding.as_deref() == Some(encoded.as_str()) {
         Action::Press(Target::Enter)
     } else {
         Action::None
-    }
+    };
+    sync_suppression(&st);
+    action
 }
 
 fn on_release(encoded: String) -> Action {
-    let st = STATE.lock().unwrap();
-    if st.capturing.is_none() && st.stt_binding.as_deref() == Some(encoded.as_str()) {
+    let mut st = STATE.lock().unwrap();
+    // Release the action that actually started, even if bindings changed
+    // while held. A key used only to capture a binding did not start STT.
+    if st.pressed_stt.as_deref() == Some(encoded.as_str()) {
+        st.pressed_stt = None;
         Action::Release(Target::Stt)
     } else {
         Action::None
@@ -276,6 +301,8 @@ pub fn spawn_listener(app: AppHandle) {
         .name("global-hotkey".into())
         .spawn(move || {
             let device = DeviceState::new();
+            #[cfg(target_os = "macos")]
+            let native_keys = super::hotkey_tap::spawn();
             let mut prev_keys: Vec<Keycode> = Vec::new();
             let mut prev_buttons = [false; MOUSE_BUTTONS];
             {
@@ -290,6 +317,11 @@ pub fn spawn_listener(app: AppHandle) {
                 std::thread::sleep(POLL_INTERVAL);
 
                 let keys = device.get_keys();
+                #[cfg(target_os = "macos")]
+                let keys: Vec<Keycode> = keys
+                    .into_iter()
+                    .filter(|key| !super::hotkey_tap::handles(*key))
+                    .collect();
                 let buttons = poll_mouse_buttons(&device);
 
                 // Edge-detect both directions: presses (down now, up before)
@@ -315,7 +347,24 @@ pub fn spawn_listener(app: AppHandle) {
                 prev_keys = keys;
                 prev_buttons = buttons;
 
-                for encoded in pressed {
+                // Native edges retain order, including a complete short tap
+                // between polls. Their keys are excluded from polling above.
+                let mut events: Vec<(String, bool)> = Vec::new();
+                #[cfg(target_os = "macos")]
+                events.extend(
+                    native_keys
+                        .try_iter()
+                        .map(|(key, down)| (encode_key(key), down)),
+                );
+                events.extend(pressed.into_iter().map(|key| (key, true)));
+                events.extend(released.into_iter().map(|key| (key, false)));
+                for (encoded, down) in events {
+                    if !down {
+                        if let Action::Release(t) = on_release(encoded) {
+                            dispatch(&app, Action::Release(t));
+                        }
+                        continue;
+                    }
                     // PRIVACY: never log arbitrary key identities — only
                     // events that match a binding (or capture mode) may be
                     // logged further down. Key state is compared and
@@ -368,12 +417,35 @@ pub fn spawn_listener(app: AppHandle) {
                         action => dispatch(&app, action),
                     }
                 }
-                for encoded in released {
-                    if let Action::Release(t) = on_release(encoded) {
-                        dispatch(&app, Action::Release(t));
-                    }
-                }
             }
         })
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_does_not_release_stt_but_rebinding_a_held_key_does() {
+        *STATE.lock().unwrap() = ListenerState {
+            capturing: Some(Target::Stt),
+            ..Default::default()
+        };
+        assert!(matches!(
+            on_press("key:F18".into()),
+            Action::Captured(Target::Stt, _)
+        ));
+        assert!(matches!(on_release("key:F18".into()), Action::None));
+        assert!(matches!(
+            on_press("key:F18".into()),
+            Action::Press(Target::Stt)
+        ));
+        set_bindings_from_settings(None, None);
+        assert!(matches!(
+            on_release("key:F18".into()),
+            Action::Release(Target::Stt)
+        ));
+        assert!(matches!(on_release("key:F18".into()), Action::None));
+    }
 }
