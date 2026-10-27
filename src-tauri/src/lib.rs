@@ -46,6 +46,7 @@ pub fn run() {
             bench_recorder: Mutex::new(None),
         })
         .setup(|app| {
+            eprintln!("[type] Accessibility access: {}", pipeline::text::input_access_allowed());
             // Device-wide hotkey listener (keyboard + mouse) for the app's
             // lifetime. On macOS this needs Input Monitoring permission.
             // The raw HID listener sees mouse side buttons that driver

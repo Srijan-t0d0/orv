@@ -20,3 +20,5 @@ pub mod tray;
 pub mod hid;
 #[cfg(target_os = "macos")]
 pub mod traffic;
+#[cfg(target_os = "macos")]
+pub mod paste;

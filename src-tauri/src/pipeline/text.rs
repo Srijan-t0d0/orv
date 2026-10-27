@@ -3,7 +3,7 @@
 //!
 //! - filler removal (um/uh/hmm) with separator tidy-up
 //! - dictation continuity (joining space between consecutive dictations)
-//! - typing into the focused app (enigo key synthesis)
+//! - insertion into the recording's target app (clipboard paste on macOS)
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -64,16 +64,37 @@ pub fn clean_fillers(text: &str) -> String {
     out
 }
 
-/// Synthesize `text` into the focused application. Uses enigo's text entry
-/// (macOS: CGEvent keyboard events with a unicode payload), which types into
-/// any field that accepts keystrokes. Needs Accessibility permission.
+/// Check the current process, rather than trusting the System Settings toggle.
+pub fn input_access_allowed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+        unsafe { AXIsProcessTrusted() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Insert `text` into the recording's target application. macOS restores the
+/// target's focus and uses clipboard paste; other platforms use enigo text entry.
+/// Needs Accessibility permission on macOS.
 ///
 /// Consecutive dictations join naturally: if the previous transcript ended
 /// without trailing whitespace and this one starts with a word character,
 /// a single space is prepended.
-pub fn type_text(text: &str) {
+pub fn type_text(text: &str, target_pid: Option<i32>, app: tauri::AppHandle) {
+    #[cfg(not(target_os = "macos"))]
     use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
 
+    if !input_access_allowed() {
+        eprintln!("[type] BLOCKED: this running process does not have Accessibility access");
+        return;
+    }
     let mut text = text.to_string();
     {
         let mut last = LAST_TYPED.lock().unwrap();
@@ -92,12 +113,20 @@ pub fn type_text(text: &str) {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(move || {
+        match crate::platform::paste::paste_text(&text, target_pid, &app) {
+            Ok(()) => eprintln!("[paste] submitted {} chars", text.chars().count()),
+            Err(e) => eprintln!("[paste] failed: {e}"),
+        }
+    });
+    #[cfg(not(target_os = "macos"))]
     std::thread::spawn(move || match Enigo::new(&EnigoSettings::default()) {
         Ok(mut enigo) => {
             if let Err(e) = enigo.text(&text) {
                 eprintln!("[type] failed to type transcript: {e}");
             } else {
-                eprintln!("[type] typed {} chars", text.chars().count());
+                eprintln!("[type] submitted {} chars as keyboard events (delivery not verified)", text.chars().count());
             }
         }
         Err(e) => eprintln!(

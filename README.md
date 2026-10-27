@@ -5,6 +5,31 @@ Hold a hotkey anywhere on your desktop, speak, release — your words appear at 
 cursor. Built with Rust + Tauri 2 as a reference app for OpenRouter's
 [speech-to-text endpoint](https://openrouter.ai/docs/guides/overview/multimodal/stt).
 
+## This fork
+
+Personal macOS fork of [OpenRouterLabs/orv](https://github.com/OpenRouterLabs/orv).
+The upstream is a reference app; this fork adds fixes tested in everyday dictation:
+
+- Remember the input application's PID before recording and restore its focus before insertion.
+- Paste with Cmd+V instead of Unicode keyboard-event text injection. Back up all clipboard
+  item types and restore them unless the clipboard changed during the paste.
+- Check the running process's Accessibility access and report insertion failures in logs.
+- Include a native macOS icon so `npm run build -- --bundles app` works without local overrides.
+
+Settings live at `~/Library/Application Support/openroutervoice/settings.json` on macOS.
+Quit the app before editing and restart afterward. That file can contain your API key;
+keep it, recordings, history, and logs out of Git. Never commit credentials.
+
+Local ad-hoc builds change their signing identity when rebuilt. macOS may require
+re-granting Accessibility and Input Monitoring, followed by fully quitting and reopening
+this app. Closing its window only hides it. The hotkey listener does not currently recover
+from a missing startup permission without a restart.
+
+Verification: `cd src-tauri && cargo test --lib`, a macOS app-bundle build, and a manual
+focused-input dictation test. The clipboard restore uses a bounded 350 ms grace period;
+slow clipboard consumers may need a longer interval. Other platforms retain upstream's
+text-injection path and have not been tested by this fork.
+
 ## Where to start reading
 
 | You want… | Read |

@@ -105,6 +105,7 @@ pub struct PipelineConfig {
     pub device: Option<String>,
     pub language: Option<String>,
     pub vocabulary: Vec<String>,
+    pub target_pid: Option<i32>,
 }
 
 /// Start listening using current settings. Callable from any thread
@@ -128,6 +129,11 @@ pub fn start_impl(app: &AppHandle) -> Result<(), String> {
         return Err("no API key".into());
     }
 
+    #[cfg(target_os = "macos")]
+    let target_pid = crate::platform::paste::frontmost_pid();
+    #[cfg(not(target_os = "macos"))]
+    let target_pid = None;
+
     let handle = start(
         app.clone(),
         state.stt.clone(),
@@ -137,6 +143,7 @@ pub fn start_impl(app: &AppHandle) -> Result<(), String> {
             device: settings.device,
             language: settings.language,
             vocabulary: settings.vocabulary,
+            target_pid,
         },
     )?;
     *pipeline = Some(handle);
@@ -402,7 +409,7 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                 app.state::<AppState>().settings.lock().unwrap().type_into_app;
                             if type_into_app {
                                 eprintln!("[stt] #{session_id} typing transcript into focused app");
-                                text::type_text(&text);
+                                text::type_text(&text, cfg.target_pid, app.clone());
                             }
                             let total_ms = end_of_speech.elapsed().as_millis() as u64;
                             // Durable history: survives restarts.
