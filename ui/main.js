@@ -89,8 +89,6 @@ function clearPlaceholder() {
   transcriptEl.querySelector(".placeholder")?.remove();
 }
 
-// Streaming models emit stt-partial before the final stt-transcript;
-// both carry the same utterance id so the partial block upgrades in place.
 function utteranceDiv(id) {
   let div = transcriptEl.querySelector(`[data-utt="${id}"]`);
   if (!div) {
@@ -102,14 +100,6 @@ function utteranceDiv(id) {
     transcriptEl.appendChild(div);
   }
   return div;
-}
-
-function showPartial(ev) {
-  const div = utteranceDiv(ev.id);
-  div.classList.add("partial");
-  div.querySelector(".text").textContent = ev.text;
-  div.querySelector(".timing").innerHTML = `<div class="meta"><span class="streaming">streaming…</span></div>`;
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
 // Seconds read faster than thousands of milliseconds: "2.4s", "0.45s".
@@ -217,7 +207,6 @@ function renderSpeedSummary() {
 
 function addUtterance(ev) {
   const div = utteranceDiv(ev.id);
-  div.classList.remove("partial");
   div.querySelector(".text").textContent = ev.text;
   div.querySelector(".timing").innerHTML = timingHtml(ev);
   runs.push(ev);
@@ -688,7 +677,6 @@ listen("stt-status", (e) => {
 });
 
 listen("stt-transcript", (e) => addUtterance(e.payload));
-listen("stt-partial", (e) => showPartial(e.payload));
 
 let capturingTarget = "stt";
 listen("hotkey-capturing", (e) => {

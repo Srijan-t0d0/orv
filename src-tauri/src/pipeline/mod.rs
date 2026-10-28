@@ -15,13 +15,10 @@ use crate::stt::client::SttClient;
 use crate::stt::models::{current, Transport};
 use crate::AppState;
 
-/// Monotonic id so the UI can correlate partial chunks with their final
-/// transcript.
+/// Monotonic id per listening session.
 static UTTERANCE_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Re-transcribe the accumulated hold-buffer this often for live preview.
-const ROLLING_INTERVAL: Duration = Duration::from_millis(1200);
-/// Cap the rolling buffer (2 min) so a stuck key can't grow unbounded.
+/// Cap the recording (2 min) so a stuck key can't grow it unbounded.
 const MAX_HOLD_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 120;
 /// Overlay level-meter update cadence.
 const LEVEL_INTERVAL: Duration = Duration::from_millis(60);
@@ -55,15 +52,6 @@ struct TranscriptEvent {
     audio_secs: f32,
     model: String,
     llm: Option<crate::history::LlmStats>,
-}
-
-/// Live preview text. Each event carries the transcript of the ENTIRE hold
-/// so far — later events supersede earlier ones, which is what lets the
-/// preview self-correct as more context arrives.
-#[derive(Clone, Serialize)]
-struct PartialEvent {
-    id: u64,
-    text: String,
 }
 
 /// Microphone level for the overlay waveform (0.0–1.0).
@@ -180,15 +168,13 @@ pub fn toggle(app: &AppHandle) {
     }
 }
 
-/// Spawn the capture → rolling-transcribe pipeline.
+/// Spawn the capture → transcribe pipeline.
 ///
 /// One listening session = ONE transcript (Whisper Flow model):
 /// - all audio from start to stop accumulates in a single buffer
-/// - while active, the full buffer is re-transcribed every ~1.2s and emitted
-///   as a partial — each pass re-hears everything, so corrections and
-///   amendments ("no wait, make that five") settle naturally as context grows
-/// - on stop, one final pass over the full buffer produces the transcript
-///   that is typed/emitted exactly once
+/// - on stop, one pass over the full buffer produces the transcript that is
+///   typed/emitted exactly once. There is no live preview: re-sending the
+///   growing buffer while recording billed ~4.5x the spoken audio.
 /// VAD is used only to detect whether any speech happened at all and for
 /// status ("speech" vs silence), never to split audio.
 pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<PipelineHandle, String> {
@@ -253,13 +239,9 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
             );
 
             let session_id = UTTERANCE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let started_at = Instant::now();
             let mut hold_buffer: Vec<f32> = Vec::new();
             let mut heard_speech = false;
-            let mut last_rolling = Instant::now();
             let mut last_level = Instant::now();
-            // Serialize rolling requests: skip a tick if one is in flight.
-            let rolling_busy = Arc::new(AtomicBool::new(false));
 
             loop {
                 if stop_thread.load(Ordering::SeqCst) {
@@ -301,49 +283,6 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
 
                 if hold_buffer.len() < MAX_HOLD_SAMPLES {
                     hold_buffer.extend_from_slice(&samples_16k);
-                }
-
-                // Rolling preview: re-transcribe the whole buffer so far.
-                if heard_speech
-                    && last_rolling.elapsed() >= ROLLING_INTERVAL
-                    && !rolling_busy.load(Ordering::SeqCst)
-                    && hold_buffer.len() > TARGET_SAMPLE_RATE as usize / 2
-                {
-                    last_rolling = Instant::now();
-                    rolling_busy.store(true, Ordering::SeqCst);
-                    let audio = hold_buffer.clone();
-                    let app2 = app.clone();
-                    let stt2 = stt.clone();
-                    let cfg_key = cfg.api_key.clone();
-                    let cfg_model = cfg.model.clone();
-                    let cfg_lang = cfg.language.clone();
-                    let cfg_hints = cfg.hints.clone();
-                    let busy = rolling_busy.clone();
-                    rt.spawn(async move {
-                        let secs = audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
-                        let wav = encode::wav_encode_16k(&audio);
-                        eprintln!("[stt] #{session_id} rolling pass ({secs:.1}s)");
-                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref(), &cfg_hints).await
-                        {
-                            Ok(t) => {
-                                let mut text = t.text.trim().to_string();
-                                if app2.state::<AppState>().settings.lock().unwrap().clean_fillers {
-                                    text = text::clean_fillers(&text);
-                                }
-                                if !text.is_empty() {
-                                    let _ = app2.emit(
-                                        "stt-partial",
-                                        PartialEvent {
-                                            id: session_id,
-                                            text,
-                                        },
-                                    );
-                                }
-                            }
-                            Err(e) => eprintln!("[stt] #{session_id} rolling pass failed: {e}"),
-                        }
-                        busy.store(false, Ordering::SeqCst);
-                    });
                 }
             }
 
@@ -497,9 +436,7 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                 eprintln!("[pipeline] no speech in session — nothing to transcribe");
             }
 
-            // Let any in-flight rolling request finish quietly.
             rt.shutdown_timeout(Duration::from_secs(10));
-            let _ = started_at; // session length available if we want stats later
             emit_status(&app, "stopped", None);
         })
         .map_err(|e| e.to_string())?;

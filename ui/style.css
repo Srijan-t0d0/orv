@@ -237,8 +237,6 @@ h1 { font-size: 13.5px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .meta .latency.slow b { color: var(--warning); }
 .meta [title] { cursor: help; }
 .meta .model { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; }
-.meta .streaming { color: var(--volt); animation: pulse 1.2s ease-in-out infinite; }
-.utterance.partial .text { color: var(--muted); }
 .utterance.history { opacity: 0.75; }
 
 .error-line {

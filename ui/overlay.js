@@ -129,12 +129,6 @@ listen("stt-status", (e) => {
   }
 });
 
-// Rolling preview of the whole session so far — supersedes previous text.
-listen("stt-partial", (e) => {
-  show();
-  setText(e.payload.text, false, false);
-});
-
 // Final transcript: bright flash, then the stopped-fade takes it away.
 listen("stt-transcript", (e) => {
   show();
