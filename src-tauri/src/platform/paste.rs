@@ -3,7 +3,6 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 
@@ -131,29 +130,111 @@ unsafe fn paste_with_pool(
     result
 }
 
+type Ref = *mut c_void;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
+    fn CGEventSetFlags(event: Ref, flags: u64);
+    fn CGEventPost(tap: u32, event: Ref);
+}
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFDataGetBytePtr(data: Ref) -> *const u8;
+    fn CFRelease(value: *const c_void);
+}
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    static kTISPropertyUnicodeKeyLayoutData: Ref;
+    fn TISCopyCurrentKeyboardLayoutInputSource() -> Ref;
+    fn TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> Ref;
+    fn TISGetInputSourceProperty(source: Ref, key: Ref) -> Ref;
+    fn LMGetKbdType() -> u8;
+    #[allow(clippy::too_many_arguments)]
+    fn UCKeyTranslate(
+        layout: *const u8,
+        key: u16,
+        action: u16,
+        modifiers: u32,
+        keyboard_type: u32,
+        options: u32,
+        dead_key_state: *mut u32,
+        max_len: usize,
+        len: *mut usize,
+        chars: *mut u16,
+    ) -> i32;
+}
+
+/// Keycode that types `ch` with ⌘ held on the active layout (Dvorak, AZERTY, …).
+/// Falls back to the last ASCII layout for input methods without layout data.
+unsafe fn layout_keycode(ch: u16) -> Option<u16> {
+    const ACTION_DISPLAY: u16 = 3;
+    const CMD_MODIFIER: u32 = 0x100 >> 8;
+    const NO_DEAD_KEYS: u32 = 1;
+    for copy in [
+        TISCopyCurrentKeyboardLayoutInputSource as unsafe extern "C" fn() -> Ref,
+        TISCopyCurrentASCIICapableKeyboardLayoutInputSource,
+    ] {
+        let source = copy();
+        if source.is_null() {
+            continue;
+        }
+        let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+        let found = (!data.is_null()).then(|| {
+            let layout = CFDataGetBytePtr(data);
+            (0..128u16).find(|&key| {
+                let (mut dead, mut len, mut out) = (0u32, 0usize, [0u16; 4]);
+                UCKeyTranslate(layout, key, ACTION_DISPLAY, CMD_MODIFIER, LMGetKbdType() as u32,
+                    NO_DEAD_KEYS, &mut dead, out.len(), &mut len, out.as_mut_ptr()) == 0
+                    && len == 1
+                    && out[0] == ch
+            })
+        });
+        CFRelease(source);
+        if let Some(found) = found {
+            return found;
+        }
+    }
+    None
+}
+
+/// ⌘ rides on the V events themselves (as OpenWhispr does): a separately pressed ⌘
+/// registers asynchronously, and a V that beats it types a bare "v".
+unsafe fn post_command_v() -> Result<(), String> {
+    const SESSION_TAP: u32 = 1;
+    const COMMAND: u64 = 1 << 20;
+    // Never guess US keycode 9: on other layouts it fires a different shortcut.
+    let key = layout_keycode(b'v' as u16).ok_or("No key types V on this keyboard layout")?;
+    for down in [true, false] {
+        let event = CGEventCreateKeyboardEvent(std::ptr::null_mut(), key, down);
+        if event.is_null() {
+            return Err("Could not create paste keystroke".into());
+        }
+        CGEventSetFlags(event, COMMAND);
+        CGEventPost(SESSION_TAP, event);
+        CFRelease(event);
+        if down {
+            std::thread::sleep(Duration::from_millis(8));
+        }
+    }
+    Ok(())
+}
+
 fn send_paste(
     handle: &tauri::AppHandle,
     target: i32,
     clipboard_version: i64,
 ) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
-    // Enigo resolves the logical V using macOS keyboard-layout APIs; those require the main thread.
+    // Keyboard-layout (TIS) APIs require the main thread.
     let scheduled = handle.run_on_main_thread(move || {
         let result = (|| -> Result<(), String> {
-            let mut keyboard = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
             let board: *mut Object = unsafe { msg_send![class!(NSPasteboard), generalPasteboard] };
             let current: i64 = unsafe { msg_send![board, changeCount] };
             if frontmost_pid() != Some(target) || current != clipboard_version {
                 return Err("Focus or clipboard changed before paste; insertion cancelled".into());
             }
-            let result = keyboard
-                .key(Key::Meta, Direction::Press)
-                .and_then(|_| keyboard.key(Key::Unicode('v'), Direction::Click))
-                .map_err(|e| e.to_string());
-            let released = keyboard
-                .key(Key::Meta, Direction::Release)
-                .map_err(|e| e.to_string());
-            result.and(released)
+            unsafe { post_command_v() }
         })();
         let _ = tx.send(result);
     });
