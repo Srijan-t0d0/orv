@@ -55,11 +55,12 @@ cd src-tauri && cargo run --example minimal
   optional second hotkey that presses Enter to send
 - **Rolling live preview** — while you hold, the whole utterance is re-transcribed
   every ~1.2s into a floating overlay pill, so the text self-corrects as context grows
-- **16 models, benchmarked** — every dedicated STT model on OpenRouter plus
-  streaming-capable audio chat models, with real WER/RTFx/price data and an in-app
+- **Live model catalog, benchmarked** — every dedicated STT model OpenRouter lists
+  (fetched at startup) plus streaming-capable audio chat models, with real
+  WER/RTFx/price data for the curated ones and an in-app
   benchmark that ranks them by measured latency on *your* connection and voice
-- **Accuracy stack** — vocabulary biasing (Deepgram keyterms / Whisper prompts),
-  mis-hearing suggestions, filler-word removal, and an opt-in LLM correction pass
+- **Accuracy stack** — mis-hearing suggestions, filler-word removal, and an opt-in
+  LLM cleanup pass (configurable model) that knows your vocabulary and accent
 - **Background service** — menu-bar tray, close-to-tray, launch at login,
   starts hidden; the main window is optional
 - **OpenRouter OAuth** — "Log in with OpenRouter" (PKCE, loopback callback), or
@@ -72,7 +73,7 @@ src-tauri/src/
 ├── stt/             ★ the OpenRouter integration (start here)
 │   ├── client.rs       one-shot + SSE streaming transports, LLM cleanup, warm pool
 │   ├── models.rs       registry: WER/RTFx/price per model, transport routing
-│   └── vocab.rs        per-provider vocabulary biasing + suggestion mining
+│   └── vocab.rs        vocabulary/accent prompt hints + suggestion mining
 ├── audio/             capture (cpal) → resample (rubato) → VAD gate (Silero)
 ├── pipeline/          session orchestration
 │   ├── mod.rs            hold-buffer, rolling re-transcription, dispatch

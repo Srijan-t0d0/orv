@@ -51,6 +51,7 @@ const startMinimized = $("startMinimized");
 const cleanFillers = $("cleanFillers");
 const smartCorrections = $("smartCorrections");
 const cleanupModel = $("cleanupModel");
+const accentInput = $("accent");
 const vocabInput = $("vocabInput");
 const vocabSuggestions = $("vocabSuggestions");
 const sugChips = $("sugChips");
@@ -292,6 +293,7 @@ function applySettings(s) {
   cleanFillers.checked = s.clean_fillers;
   smartCorrections.checked = s.smart_corrections;
   cleanupModel.value = s.cleanup_model;
+  accentInput.value = s.accent;
   vocabInput.value = (s.vocabulary || []).join(", ");
   seedCount.textContent = s.seed_count;
   if (s.model) currentModel = s.model;
@@ -315,6 +317,7 @@ async function patchSettings() {
       vocabulary: vocabInput.value.split(",").map((t) => t.trim()).filter(Boolean),
       smart_corrections: smartCorrections.checked,
       cleanup_model: cleanupModel.value.trim(),
+      accent: accentInput.value.trim(),
     },
   });
   renderCredentials(s);
@@ -434,7 +437,7 @@ modeSwitch.addEventListener("click", (e) => {
   patchSettings();
 });
 
-for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, cleanupModel, vocabInput]) {
+for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, cleanupModel, accentInput, vocabInput]) {
   el.addEventListener("change", patchSettings);
 }
 

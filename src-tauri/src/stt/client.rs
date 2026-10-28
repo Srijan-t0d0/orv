@@ -30,13 +30,6 @@ struct TranscriptionRequest<'a> {
     input_audio: InputAudio<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
-    /// Decoder biasing for Whisper/GPT-4o-style models: a vocabulary
-    /// sentence nudges them toward the right spellings of technical terms.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt: Option<String>,
-    /// Provider passthrough — Deepgram's keyterm biasing rides here.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -232,24 +225,8 @@ impl SttClient {
         wav_bytes: &[u8],
         audio_secs: f32,
         language: Option<&str>,
-        vocab: &[String],
     ) -> Result<Transcription, String> {
         let data = base64::engine::general_purpose::STANDARD.encode(wav_bytes);
-
-        // Vocabulary biasing, in whichever dialect the model understands.
-        let (prompt, provider) = if vocab.is_empty() {
-            (None, None)
-        } else if model.starts_with("deepgram/") {
-            (
-                None,
-                Some(serde_json::json!({
-                    "options": { "deepgram": { "keyterm": super::vocab::keyterms(vocab) } }
-                })),
-            )
-        } else {
-            (Some(super::vocab::biasing_prompt(vocab)), None)
-        };
-
         let body = TranscriptionRequest {
             model,
             input_audio: InputAudio {
@@ -257,8 +234,6 @@ impl SttClient {
                 format: "wav",
             },
             language,
-            prompt,
-            provider,
         };
 
         let started = Instant::now();
@@ -303,16 +278,18 @@ impl SttClient {
         model: &str,
         wav_bytes: &[u8],
         audio_secs: f32,
+        hints: &str,
         mut on_delta: impl FnMut(&str),
     ) -> Result<Transcription, String> {
         let data = base64::engine::general_purpose::STANDARD.encode(wav_bytes);
+        let prompt = format!("{CHAT_TRANSCRIBE_PROMPT} {hints}");
         let body = serde_json::json!({
             "model": model,
             "stream": true,
             "messages": [{
                 "role": "user",
                 "content": [
-                    { "type": "text", "text": CHAT_TRANSCRIBE_PROMPT },
+                    { "type": "text", "text": prompt.trim_end() },
                     { "type": "input_audio", "input_audio": { "data": data, "format": "wav" } }
                 ]
             }]
@@ -363,20 +340,13 @@ impl SttClient {
         api_key: &str,
         model: &str,
         transcript: &str,
-        vocab: &[String],
+        hints: &str,
     ) -> Result<Correction, String> {
-        let vocab_line = if vocab.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "\n\nCustom dictionary (use these exact spellings when they appear): {}.",
-                super::vocab::merged_terms(vocab).join(", ")
-            )
-        };
+        let hints_block = if hints.is_empty() { String::new() } else { format!("\n\n{hints}") };
         let body = serde_json::json!({
             "model": model,
             "messages": [
-                { "role": "system", "content": format!("{CLEANUP_PROMPT}{vocab_line}") },
+                { "role": "system", "content": format!("{CLEANUP_PROMPT}{hints_block}") },
                 { "role": "user", "content": format!("<transcript>{transcript}</transcript>") }
             ],
             "temperature": 0.0,

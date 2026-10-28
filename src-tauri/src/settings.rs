@@ -36,8 +36,8 @@ pub struct Settings {
     pub launch_at_login: bool,
     /// Strip filler words (um, uh, …) from transcripts before typing.
     pub clean_fillers: bool,
-    /// User vocabulary terms, merged with the built-in seed list and sent
-    /// as model biasing (Deepgram keyterms / Whisper prompt).
+    /// User vocabulary terms, merged with the built-in seed list and given
+    /// to the cleanup pass and streaming models (see `vocab::hints`).
     pub vocabulary: Vec<String>,
     /// Smart corrections: run the final transcript through a fast LLM to
     /// fix homophones and tech terms using context. Adds ~300ms + a
@@ -45,6 +45,8 @@ pub struct Settings {
     pub smart_corrections: bool,
     /// OpenRouter model for the smart-corrections pass.
     pub cleanup_model: String,
+    /// Free-text accent, e.g. "Indian English"; empty = none.
+    pub accent: String,
 }
 
 impl Default for Settings {
@@ -66,6 +68,7 @@ impl Default for Settings {
             vocabulary: Vec::new(),
             smart_corrections: false,
             cleanup_model: DEFAULT_CLEANUP_MODEL.into(),
+            accent: String::new(),
         }
     }
 }

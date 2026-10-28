@@ -167,12 +167,19 @@
             <input id="language" type="text" maxlength="2" placeholder="auto"
                    title="Optional ISO-639-1 hint (e.g. en) — skips auto-detect for lower latency" />
           </div>
+          <div class="field">
+            <label for="accent">Accent</label>
+            <input id="accent" type="text" maxlength="60" placeholder="e.g. Indian English"
+                   title="Told to Smart cleanup and streaming models so they can fix words misheard because of your accent" />
+          </div>
+          <p class="hint">The accent reaches the model only through Smart cleanup or a streaming
+            model — OpenRouter's dedicated transcription models don't accept hints.</p>
         </section>
 
         <!-- Vocabulary -->
         <section class="panel-page" data-panel="vocabulary">
           <h2>Vocabulary</h2>
-          <p class="hint">Technical terms are sent to the model as recognition hints
+          <p class="hint">Smart cleanup and streaming models use these exact spellings
             (<span id="seedCount">0</span> built in). Add product names, jargon, or names,
             comma-separated.</p>
           <textarea id="vocabInput" rows="4" placeholder="Acme Corp, MyProduct, Kowalski, …"></textarea>

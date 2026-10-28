@@ -107,6 +107,8 @@ pub struct PipelineConfig {
     pub device: Option<String>,
     pub language: Option<String>,
     pub vocabulary: Vec<String>,
+    /// Accent + vocabulary text for prompts (see `vocab::hints`).
+    pub hints: String,
     pub target_pid: Option<i32>,
 }
 
@@ -144,6 +146,7 @@ pub fn start_impl(app: &AppHandle) -> Result<(), String> {
             model: settings.model,
             device: settings.device,
             language: settings.language,
+            hints: crate::stt::vocab::hints(&settings.vocabulary, &settings.accent),
             vocabulary: settings.vocabulary,
             target_pid,
         },
@@ -306,13 +309,13 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                     let cfg_key = cfg.api_key.clone();
                     let cfg_model = cfg.model.clone();
                     let cfg_lang = cfg.language.clone();
-                    let cfg_vocab = cfg.vocabulary.clone();
+                    let cfg_hints = cfg.hints.clone();
                     let busy = rolling_busy.clone();
                     rt.spawn(async move {
                         let secs = audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
                         let wav = encode::wav_encode_16k(&audio);
                         eprintln!("[stt] #{session_id} rolling pass ({secs:.1}s)");
-                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref(), &cfg_vocab).await
+                        match transcribe_any(&stt2, &cfg_key, &cfg_model, &wav, secs, cfg_lang.as_deref(), &cfg_hints).await
                         {
                             Ok(t) => {
                                 let mut text = t.text.trim().to_string();
@@ -357,7 +360,7 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                     &wav,
                     audio_secs,
                     cfg.language.as_deref(),
-                    &cfg.vocabulary,
+                    &cfg.hints,
                 ));
                 match result {
                     Ok(t) => {
@@ -382,7 +385,7 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                 ms: 0,
                                 error: None,
                             };
-                            match rt.block_on(stt.smart_correct(&cfg.api_key, &cleanup_model, &text, &cfg.vocabulary)) {
+                            match rt.block_on(stt.smart_correct(&cfg.api_key, &cleanup_model, &text, &cfg.hints)) {
                                 Ok(c) => {
                                     stats.ttfb_ms = Some(c.ttfb_ms);
                                     stats.ms = c.api_ms;
@@ -489,7 +492,7 @@ async fn transcribe_any(
     wav: &[u8],
     audio_secs: f32,
     language: Option<&str>,
-    vocab: &[String],
+    hints: &str,
 ) -> Result<crate::stt::client::Transcription, String> {
     let streaming = current()
         .iter()
@@ -497,8 +500,8 @@ async fn transcribe_any(
         .map(|m| m.transport == Transport::ChatStream)
         .unwrap_or(false);
     if streaming {
-        stt.transcribe_streaming(api_key, model, wav, audio_secs, |_| {}).await
+        stt.transcribe_streaming(api_key, model, wav, audio_secs, hints, |_| {}).await
     } else {
-        stt.transcribe(api_key, model, wav, audio_secs, language, vocab).await
+        stt.transcribe(api_key, model, wav, audio_secs, language).await
     }
 }

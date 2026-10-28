@@ -180,10 +180,10 @@ pub fn run(app: AppHandle, model_ids: Vec<String>) -> Result<(), String> {
                 let result = rt.block_on(async {
                     match model.transport {
                         Transport::Transcription => {
-                            stt.transcribe(&api_key, model.id, &wav, secs, language.as_deref(), &[]).await
+                            stt.transcribe(&api_key, model.id, &wav, secs, language.as_deref()).await
                         }
                         Transport::ChatStream => {
-                            stt.transcribe_streaming(&api_key, model.id, &wav, secs, |_| {}).await
+                            stt.transcribe_streaming(&api_key, model.id, &wav, secs, "", |_| {}).await
                         }
                     }
                 });

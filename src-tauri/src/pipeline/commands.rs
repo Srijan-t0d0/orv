@@ -66,6 +66,7 @@ pub struct UiSettings {
     pub seed_count: usize,
     pub smart_corrections: bool,
     pub cleanup_model: String,
+    pub accent: String,
 }
 
 /// Mutable subset the webview is allowed to change.
@@ -82,6 +83,7 @@ pub struct UiSettingsPatch {
     pub vocabulary: Option<Vec<String>>,
     pub smart_corrections: Option<bool>,
     pub cleanup_model: Option<String>,
+    pub accent: Option<String>,
 }
 
 fn to_ui(settings: &Settings) -> UiSettings {
@@ -116,6 +118,7 @@ fn to_ui(settings: &Settings) -> UiSettings {
         seed_count: crate::stt::vocab::SEED_TERMS.len(),
         smart_corrections: settings.smart_corrections,
         cleanup_model: settings.cleanup_model.clone(),
+        accent: settings.accent.clone(),
     }
 }
 
@@ -159,6 +162,9 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: UiSetting
     }
     if let Some(smart) = patch.smart_corrections {
         settings.smart_corrections = smart;
+    }
+    if let Some(accent) = patch.accent {
+        settings.accent = accent.trim().to_string();
     }
     if let Some(model) = patch.cleanup_model {
         let model = model.trim();

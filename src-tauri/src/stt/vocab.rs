@@ -65,9 +65,18 @@ pub fn merged_terms(user_terms: &[String]) -> Vec<String> {
     out
 }
 
-/// Whisper/GPT-4o style biasing prompt: a natural-ish sentence embedding
-/// the vocabulary. Kept under ~800 chars — long prompts dilute biasing.
-pub fn biasing_prompt(user_terms: &[String]) -> String {
+/// Speaker accent and vocabulary for the prompts we write ourselves (the
+/// cleanup pass and chat-transport transcription). These are the only places
+/// hints reach a model: tested 2026-10-28, every OpenRouter STT model rejected
+/// `keyterms`, and `prompt` / provider options had no effect on the output.
+/// The list stays under ~800 chars — long prompts dilute it.
+pub fn hints(user_terms: &[String], accent: &str) -> String {
+    let accent = accent.trim();
+    let accent_line = if accent.is_empty() {
+        String::new()
+    } else {
+        format!("Speaker's accent: {accent}. ")
+    };
     let terms = merged_terms(user_terms);
     let mut list = String::new();
     for term in &terms {
@@ -79,12 +88,10 @@ pub fn biasing_prompt(user_terms: &[String]) -> String {
         }
         list.push_str(term);
     }
-    format!("Technical vocabulary that may appear: {list}.")
-}
-
-/// Deepgram keyterm list (their limit is generous; cap for URL sanity).
-pub fn keyterms(user_terms: &[String]) -> Vec<String> {
-    merged_terms(user_terms).into_iter().take(100).collect()
+    if list.is_empty() {
+        return accent_line.trim_end().to_string();
+    }
+    format!("{accent_line}Vocabulary that may appear (use these exact spellings): {list}.")
 }
 
 // ── Suggestion engine ──────────────────────────────────────────────────
@@ -171,4 +178,19 @@ pub fn suggest_terms(transcript: &str, user_terms: &[String]) -> Vec<(String, St
     }
 
     suggestions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hints;
+
+    #[test]
+    fn hints_carry_accent_and_vocabulary() {
+        let terms = vec!["Kowalski".to_string()];
+        let with = hints(&terms, " Indian English ");
+        assert!(with.starts_with("Speaker's accent: Indian English. Vocabulary"));
+        assert!(with.contains("Kowalski"));
+        assert!(with.len() < 900);
+        assert!(!hints(&terms, "").contains("accent"));
+    }
 }

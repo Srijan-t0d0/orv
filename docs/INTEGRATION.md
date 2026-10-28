@@ -17,9 +17,7 @@ on top.
 {
   "model": "deepgram/nova-3",
   "input_audio": { "data": "<base64 wav>", "format": "wav" },
-  "language": "en",          // optional ISO-639-1 hint — skips auto-detect
-  "prompt": "…",             // optional decoder biasing (see §4)
-  "provider": { "options": { /* provider passthrough, see §4 */ } }
+  "language": "en"           // optional ISO-639-1 hint — skips auto-detect
 }
 ```
 
@@ -89,26 +87,28 @@ in-app benchmark (record a clip → run it through every model → rank by
 measured latency) precisely because network path, clip length, and voice
 change the ranking. On our test machine, `x-ai/grok-stt-1.0` beat everything.
 
-## 4. Vocabulary biasing (the accuracy lever)
+## 4. Vocabulary and accent hints (the accuracy lever)
 
-STT models mangle technical terms ("PyPI" → "pie pie"). Fix it at the decoder
-*before* the text is wrong — each provider has a dialect
-([`vocab.rs`](../src-tauri/src/stt/vocab.rs)):
+STT models mangle technical terms ("PyPI" → "pie pie") and accented speech.
+Decoder-side biasing does not currently reach models through OpenRouter's
+`/audio/transcriptions` (tested 2026-10-28): every STT model tried rejected
+the documented `keyterms` field with a 400, and `prompt` or provider options
+(`provider.options.groq.prompt`, Deepgram `keyterm`) were accepted but did not
+change the output. So hints go only into prompts this app writes
+([`vocab.rs`](../src-tauri/src/stt/vocab.rs) `hints`): the speaker's accent
+plus the vocabulary, kept under ~800 chars.
 
-- **Deepgram:** per-term `keyterm` list via provider passthrough:
-  `"provider": { "options": { "deepgram": { "keyterm": ["PyPI", "OpenAPI", …] } } }`
-- **Whisper / GPT-4o family:** a `prompt` string; a sentence casually
-  containing your vocabulary biases decoding. Keep it under ~800 chars —
-  longer prompts dilute the effect.
-
-Layer on top, in increasing power:
+In increasing power:
 1. deterministic post-fixes (this repo strips filler words in
    [`pipeline/text.rs`](../src-tauri/src/pipeline/text.rs))
-2. an LLM correction pass — `SttClient::smart_correct` sends the transcript
-   to `google/gemini-3.1-flash-lite` with a "fix recognition errors, change
-   nothing else" prompt, a 6s timeout, and a length sanity check so failure
-   falls back to the raw transcript. ~300ms and ~$0.0001 per dictation; the
-   only fix for homophones (eye/I) that needs sentence context.
+2. chat-transport models (audio via `/chat/completions`) get the hints in
+   their transcription instruction, which they do follow
+3. an LLM cleanup pass — `SttClient::smart_correct` sends the transcript to
+   a configurable model (default `google/gemini-3.1-flash-lite`) with a
+   cleanup prompt adapted from OpenWhispr's, the hints, a 6s timeout, and a
+   length sanity check so failure falls back to the raw transcript. The
+   only fix for homophones (eye/I) and accent mis-hearings that needs
+   sentence context.
 
 ## 5. OAuth PKCE ("Log in with OpenRouter")
 
