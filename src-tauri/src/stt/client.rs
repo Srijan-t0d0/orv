@@ -47,6 +47,8 @@ struct TranscriptionResponse {
 #[derive(Clone, Serialize)]
 pub struct Transcription {
     pub text: String,
+    /// Request sent → first response byte (first text delta when streaming).
+    pub ttfb_ms: u64,
     /// Round-trip time of the HTTP request, in milliseconds.
     pub api_ms: u64,
     /// Seconds of audio that were transcribed.
@@ -61,7 +63,49 @@ const CHAT_TRANSCRIBE_PROMPT: &str =
 
 /// Model for the "Smart corrections" LLM cleanup pass: cheapest of the
 /// current Gemini Flash Lite line — ~a hundredth of a cent per dictation.
-const CLEANUP_MODEL: &str = "google/gemini-3.1-flash-lite";
+pub const CLEANUP_MODEL: &str = "google/gemini-3.1-flash-lite";
+
+/// A smart-corrections result with the same timing split as `Transcription`.
+pub struct Correction {
+    pub text: String,
+    pub ttfb_ms: u64,
+    pub api_ms: u64,
+}
+
+/// Parse an SSE chat stream (`data: {json}` lines ending in `data: [DONE]`),
+/// calling `on_delta` per text fragment; returns the full text.
+async fn read_sse(mut resp: reqwest::Response, mut on_delta: impl FnMut(&str)) -> Result<String, String> {
+    let mut full = String::new();
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("stream read failed: {e}"))?
+    {
+        buf.extend_from_slice(&chunk);
+        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim();
+            let Some(payload) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if payload == "[DONE]" {
+                buf.clear();
+                break;
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    if !delta.is_empty() {
+                        full.push_str(delta);
+                        on_delta(delta);
+                    }
+                }
+            }
+        }
+    }
+    Ok(full)
+}
 
 impl SttClient {
     pub fn new() -> Self {
@@ -138,6 +182,8 @@ impl SttClient {
             .send()
             .await
             .map_err(|e| format!("request failed: {e}"))?;
+        // Non-streaming: headers arrive once the transcript is ready.
+        let ttfb_ms = started.elapsed().as_millis() as u64;
 
         let status = resp.status();
         if !status.is_success() {
@@ -152,6 +198,7 @@ impl SttClient {
 
         Ok(Transcription {
             text: parsed.text,
+            ttfb_ms,
             api_ms: started.elapsed().as_millis() as u64,
             audio_secs,
             model: model.to_string(),
@@ -199,41 +246,18 @@ impl SttClient {
             return Err(format!("OpenRouter error {status}: {text}"));
         }
 
-        // Parse the SSE stream: lines of `data: {json}` ending in `data: [DONE]`.
-        let mut full = String::new();
-        let mut buf = Vec::new();
-        let mut stream = resp;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| format!("stream read failed: {e}"))?
-        {
-            buf.extend_from_slice(&chunk);
-            while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = buf.drain(..=nl).collect();
-                let line = String::from_utf8_lossy(&line);
-                let line = line.trim();
-                let Some(payload) = line.strip_prefix("data: ") else {
-                    continue;
-                };
-                if payload == "[DONE]" {
-                    buf.clear();
-                    break;
-                }
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
-                    if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                        if !delta.is_empty() {
-                            full.push_str(delta);
-                            on_delta(delta);
-                        }
-                    }
-                }
-            }
-        }
+        let mut ttfb_ms = None;
+        let full = read_sse(resp, |delta| {
+            ttfb_ms.get_or_insert(started.elapsed().as_millis() as u64);
+            on_delta(delta);
+        })
+        .await?;
+        let api_ms = started.elapsed().as_millis() as u64;
 
         Ok(Transcription {
             text: full,
-            api_ms: started.elapsed().as_millis() as u64,
+            ttfb_ms: ttfb_ms.unwrap_or(api_ms),
+            api_ms,
             audio_secs,
             model: model.to_string(),
         })
@@ -249,7 +273,7 @@ impl SttClient {
         api_key: &str,
         transcript: &str,
         vocab: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<Correction, String> {
         let vocab_line = if vocab.is_empty() {
             String::new()
         } else {
@@ -270,9 +294,12 @@ impl SttClient {
                 },
                 { "role": "user", "content": transcript }
             ],
-            "temperature": 0.0
+            "temperature": 0.0,
+            // Streamed only so time-to-first-token is measurable.
+            "stream": true
         });
 
+        let started = Instant::now();
         let resp = self
             .http
             .post(format!("{BASE_URL}/chat/completions"))
@@ -288,15 +315,15 @@ impl SttClient {
         if !resp.status().is_success() {
             return Err(format!("cleanup error {}", resp.status()));
         }
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("bad cleanup response: {e}"))?;
-        let corrected = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let mut ttfb_ms = None;
+        let corrected = read_sse(resp, |_| {
+            ttfb_ms.get_or_insert(started.elapsed().as_millis() as u64);
+        })
+        .await
+        .map_err(|e| format!("bad cleanup response: {e}"))?
+        .trim()
+        .to_string();
+        let api_ms = started.elapsed().as_millis() as u64;
 
         // Sanity guard: an empty or wildly different-length answer means the
         // model editorialized — keep the raw transcript instead.
@@ -304,6 +331,10 @@ impl SttClient {
         if corrected.is_empty() || !(0.5..=1.6).contains(&ratio) {
             return Err("cleanup output failed sanity check".into());
         }
-        Ok(corrected)
+        Ok(Correction {
+            text: corrected,
+            ttfb_ms: ttfb_ms.unwrap_or(api_ms),
+            api_ms,
+        })
     }
 }

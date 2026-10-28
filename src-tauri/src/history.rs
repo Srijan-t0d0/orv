@@ -23,9 +23,26 @@ pub struct HistoryEntry {
     pub at: u64,
     pub text: String,
     pub total_ms: u64,
+    /// Speech-to-text duration (request sent → transcript received).
     pub api_ms: u64,
+    /// Speech-to-text latency (request sent → first byte). Absent in old entries.
+    #[serde(default)]
+    pub stt_ttfb_ms: Option<u64>,
     pub audio_secs: f32,
     pub model: String,
+    /// Smart-corrections pass, when it ran.
+    #[serde(default)]
+    pub llm: Option<LlmStats>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LlmStats {
+    pub model: String,
+    /// Request sent → first token; None if it failed before any token.
+    pub ttfb_ms: Option<u64>,
+    pub ms: u64,
+    /// Why the corrected text was not used (transcript kept as-is).
+    pub error: Option<String>,
 }
 
 fn path() -> Option<PathBuf> {
@@ -65,5 +82,16 @@ fn compact_if_needed(path: &PathBuf) {
     if lines.len() > MAX_LINES {
         let keep = &lines[lines.len() - MAX_LINES / 2..];
         let _ = fs::write(path, format!("{}\n", keep.join("\n")));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HistoryEntry;
+    #[test]
+    fn old_entries_still_load() {
+        let old = r#"{"at":1,"text":"hi","total_ms":900,"api_ms":700,"audio_secs":1.5,"model":"m"}"#;
+        let e: HistoryEntry = serde_json::from_str(old).unwrap();
+        assert!(e.stt_ttfb_ms.is_none() && e.llm.is_none());
     }
 }

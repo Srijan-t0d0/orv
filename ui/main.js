@@ -105,6 +105,17 @@ function showPartial(ev) {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
+// Per-stage timing: "stt 180/640 ms" = latency (first byte) / duration.
+function stageSpans(e) {
+  const ttfb = (v) => (v == null ? "–" : v);
+  let html = `<span title="speech-to-text latency / duration">stt ${ttfb(e.stt_ttfb_ms)}/${e.api_ms} ms</span>`;
+  if (e.llm) {
+    const failed = e.llm.error ? " slow" : "";
+    html += `<span class="${failed}" title="${e.llm.model}${e.llm.error ? ` — ${e.llm.error.replace(/"/g, "&quot;")}` : ""}">llm ${ttfb(e.llm.ttfb_ms)}/${e.llm.ms} ms${e.llm.error ? " ✕" : ""}</span>`;
+  }
+  return html;
+}
+
 function addUtterance(ev) {
   const div = utteranceDiv(ev.id);
   div.classList.remove("partial");
@@ -112,7 +123,7 @@ function addUtterance(ev) {
   div.querySelector(".text").textContent = ev.text;
   div.querySelector(".meta").innerHTML = `
       <span class="latency${slow}">${ev.total_ms} ms</span>
-      <span>api ${ev.api_ms} ms</span>
+      ${stageSpans(ev)}
       <span>${ev.audio_secs.toFixed(1)}s audio</span>
       <span>${ev.model}</span>`;
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -322,6 +333,7 @@ function renderHistory(entries) {
       <div class="meta">
         <span>${when}</span>
         <span class="latency">${h.total_ms} ms</span>
+        ${stageSpans(h)}
         <span>${h.audio_secs.toFixed(1)}s audio</span>
         <span>${h.model}</span>
       </div>`;

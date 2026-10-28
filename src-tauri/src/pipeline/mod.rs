@@ -45,8 +45,10 @@ struct TranscriptEvent {
     total_ms: u64,
     /// HTTP round-trip portion.
     api_ms: u64,
+    stt_ttfb_ms: u64,
     audio_secs: f32,
     model: String,
+    llm: Option<crate::history::LlmStats>,
 }
 
 /// Live preview text. Each event carries the transcript of the ENTIRE hold
@@ -371,24 +373,42 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                         // Smart corrections: context-aware LLM fixup for
                         // homophones and tech terms. Falls back to the raw
                         // transcript on any failure or timeout.
+                        let mut llm = None;
                         if do_smart && !text.is_empty() {
                             let started = Instant::now();
+                            let mut stats = crate::history::LlmStats {
+                                model: crate::stt::client::CLEANUP_MODEL.into(),
+                                ttfb_ms: None,
+                                ms: 0,
+                                error: None,
+                            };
                             match rt.block_on(stt.smart_correct(&cfg.api_key, &text, &cfg.vocabulary)) {
-                                Ok(corrected) => {
-                                    eprintln!(
-                                        "[smart] corrected in {} ms",
-                                        started.elapsed().as_millis()
-                                    );
-                                    text = corrected;
+                                Ok(c) => {
+                                    stats.ttfb_ms = Some(c.ttfb_ms);
+                                    stats.ms = c.api_ms;
+                                    text = c.text;
                                 }
-                                Err(e) => eprintln!("[smart] skipped: {e}"),
+                                Err(e) => {
+                                    eprintln!("[smart] skipped: {e}");
+                                    stats.ms = started.elapsed().as_millis() as u64;
+                                    stats.error = Some(e);
+                                }
                             }
+                            llm = Some(stats);
                         }
                         // PRIVACY: log timing/length only, never transcript
                         // content — dictations must not accumulate in logs.
                         eprintln!(
-                            "[stt] #{session_id} final in {} ms ({} chars)",
+                            "[stats] #{session_id} stt {} ttfb {} ms / {} ms | llm {} ({} chars)",
+                            t.model,
+                            t.ttfb_ms,
                             t.api_ms,
+                            llm.as_ref().map_or("off".into(), |l| format!(
+                                "ttfb {} ms / {} ms{}",
+                                l.ttfb_ms.map_or("-".into(), |v| v.to_string()),
+                                l.ms,
+                                if l.error.is_some() { " (failed)" } else { "" }
+                            )),
                             text.chars().count()
                         );
                         if text.is_empty() {
@@ -421,8 +441,10 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                 text: text.clone(),
                                 total_ms,
                                 api_ms: t.api_ms,
+                                stt_ttfb_ms: Some(t.ttfb_ms),
                                 audio_secs: t.audio_secs,
                                 model: t.model.clone(),
+                                llm: llm.clone(),
                             });
                             let _ = app.emit(
                                 "stt-transcript",
@@ -431,8 +453,10 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                     text,
                                     total_ms,
                                     api_ms: t.api_ms,
+                                    stt_ttfb_ms: t.ttfb_ms,
                                     audio_secs: t.audio_secs,
                                     model: t.model,
+                                    llm,
                                 },
                             );
                         }
