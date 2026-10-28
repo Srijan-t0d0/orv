@@ -1,5 +1,6 @@
-//! Registry of every dedicated STT model on OpenRouter (all 13 as of
-//! 2026-08), plus audio-capable chat models that support streaming.
+//! Curated STT models (every dedicated one on OpenRouter as of 2026-08),
+//! plus audio-capable chat models that support streaming. At runtime the
+//! list is reconciled with OpenRouter's live catalog (see `merge`).
 //!
 //! Stats are grounded in real data:
 //! - `wer`: word error rate from the Open ASR Leaderboard (short-form
@@ -17,7 +18,9 @@
 //!   decoders. The UI additionally shows live measured latency, which is the
 //!   ground truth for speed on your network.
 
-use serde::Serialize;
+use std::sync::OnceLock;
+
+use serde::{Deserialize, Serialize};
 
 /// How audio reaches the model.
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -289,3 +292,108 @@ pub const MODELS: &[SttModel] = &[
 ];
 
 pub const DEFAULT_MODEL: &str = "deepgram/nova-3";
+
+/// One entry of `GET /models?output_modalities=transcription`.
+#[derive(Deserialize)]
+pub struct LiveModel {
+    pub id: String,
+    /// "Provider: Model name".
+    pub name: String,
+    pub pricing: LivePricing,
+}
+
+#[derive(Deserialize)]
+pub struct LivePricing {
+    pub prompt: String,
+    pub completion: String,
+}
+
+static LIVE: OnceLock<Vec<SttModel>> = OnceLock::new();
+
+/// The reconciled catalog once fetched, else the curated list.
+pub fn current() -> &'static [SttModel] {
+    LIVE.get().map(Vec::as_slice).unwrap_or(MODELS)
+}
+
+pub fn set_live(live: &[LiveModel]) {
+    let _ = LIVE.set(merge(live));
+}
+
+fn leak(s: &str) -> &'static str {
+    // ponytail: leaked once per process (LIVE is set at most once).
+    Box::leak(s.to_owned().into_boxed_str())
+}
+
+/// Duration-priced models list $/second of audio as `prompt`; token-priced
+/// ones (non-zero completion) can't be normalized to $/hr.
+fn price_per_hour(p: &LivePricing) -> String {
+    let prompt: f64 = p.prompt.parse().unwrap_or(0.0);
+    let completion: f64 = p.completion.parse().unwrap_or(0.0);
+    let hourly = prompt * 3600.0;
+    if completion > 0.0 {
+        "token-priced".into()
+    } else if hourly > 0.0 && hourly < 10.0 {
+        format!("${hourly:.2}/hr")
+    } else {
+        // Some providers' units don't fit $/s (e.g. MAI lists 0.1).
+        "—".into()
+    }
+}
+
+/// Curated entries keep their benchmark notes; curated transcription models
+/// OpenRouter no longer lists are dropped; new ones get generic entries.
+/// Chat-stream models aren't in the transcription catalog and are kept.
+pub fn merge(live: &[LiveModel]) -> Vec<SttModel> {
+    let mut models: Vec<SttModel> = MODELS
+        .iter()
+        .filter(|m| m.transport == Transport::ChatStream || live.iter().any(|l| l.id == m.id))
+        .cloned()
+        .collect();
+    for l in live.iter().filter(|l| !MODELS.iter().any(|m| m.id == l.id)) {
+        let (provider, name) = l.name.split_once(": ").unwrap_or(("", &l.name));
+        models.push(SttModel {
+            id: leak(&l.id),
+            name: leak(name),
+            transport: Transport::Transcription,
+            provider: leak(provider),
+            speed: 0,
+            quality: 0,
+            wer: "—",
+            rtfx: "—",
+            price: leak(&price_per_hour(&l.pricing)),
+            languages: "—",
+            note: "New on OpenRouter, not benchmarked here yet.",
+            suggested: false,
+        });
+    }
+    models
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live(id: &str, name: &str, prompt: &str, completion: &str) -> LiveModel {
+        LiveModel {
+            id: id.into(),
+            name: name.into(),
+            pricing: LivePricing { prompt: prompt.into(), completion: completion.into() },
+        }
+    }
+
+    #[test]
+    fn merge_keeps_curated_drops_retired_adds_new() {
+        let merged = merge(&[
+            live("deepgram/nova-3", "Deepgram: Nova 3", "0.0000716", "0"),
+            live("elevenlabs/scribe-v2", "ElevenLabs: Scribe v2", "0.0000611111", "0"),
+            live("x/tok", "X: Tok", "0.000002", "0.00001"),
+        ]);
+        let nova = merged.iter().find(|m| m.id == "deepgram/nova-3").unwrap();
+        assert_eq!(nova.wer, "5.2%");
+        assert!(!merged.iter().any(|m| m.id == "openai/whisper-1"));
+        assert!(merged.iter().any(|m| m.transport == Transport::ChatStream));
+        let scribe = merged.iter().find(|m| m.id == "elevenlabs/scribe-v2").unwrap();
+        assert_eq!((scribe.name, scribe.provider, scribe.price), ("Scribe v2", "ElevenLabs", "$0.22/hr"));
+        assert_eq!(merged.iter().find(|m| m.id == "x/tok").unwrap().price, "token-priced");
+    }
+}

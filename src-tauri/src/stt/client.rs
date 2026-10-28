@@ -135,6 +135,26 @@ impl SttClient {
         });
     }
 
+    /// Every dedicated speech-to-text model OpenRouter currently serves.
+    pub async fn transcription_models(&self) -> Result<Vec<super::models::LiveModel>, String> {
+        #[derive(Deserialize)]
+        struct List {
+            data: Vec<super::models::LiveModel>,
+        }
+        let list: List = self
+            .http
+            .get(format!("{BASE_URL}/models?output_modalities=transcription"))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| format!("model list failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("bad model list: {e}"))?;
+        Ok(list.data)
+    }
+
     pub async fn transcribe(
         &self,
         api_key: &str,

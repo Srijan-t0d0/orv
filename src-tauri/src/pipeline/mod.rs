@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::{capture, encode, vad, TARGET_SAMPLE_RATE};
 use crate::stt::client::SttClient;
-use crate::stt::models::{Transport, MODELS};
+use crate::stt::models::{current, Transport};
 use crate::AppState;
 
 /// Monotonic id so the UI can correlate partial chunks with their final
@@ -491,7 +491,7 @@ async fn transcribe_any(
     language: Option<&str>,
     vocab: &[String],
 ) -> Result<crate::stt::client::Transcription, String> {
-    let streaming = MODELS
+    let streaming = current()
         .iter()
         .find(|m| m.id == model)
         .map(|m| m.transport == Transport::ChatStream)

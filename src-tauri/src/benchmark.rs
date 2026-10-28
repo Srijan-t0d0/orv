@@ -14,7 +14,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::{capture, encode, TARGET_SAMPLE_RATE};
-use crate::stt::models::{Transport, MODELS};
+use crate::stt::models::{current, Transport};
 use crate::AppState;
 
 fn clip_path() -> Option<PathBuf> {
@@ -170,7 +170,7 @@ pub fn run(app: AppHandle, model_ids: Vec<String>) -> Result<(), String> {
                 Err(e) => return emit(&app, "error", Some(e.to_string()), None),
             };
 
-            let selected: Vec<_> = MODELS
+            let selected: Vec<_> = current()
                 .iter()
                 .filter(|m| model_ids.is_empty() || model_ids.iter().any(|id| id == m.id))
                 .collect();

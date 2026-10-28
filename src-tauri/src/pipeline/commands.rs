@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 use crate::audio::capture;
 use crate::platform::hotkey;
 use crate::settings::Settings;
-use crate::stt::models::{SttModel, MODELS};
+use crate::stt::models::{current, set_live, SttModel, MODELS};
 use crate::AppState;
 
 #[tauri::command]
@@ -19,9 +19,17 @@ pub fn stop_listening(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Live OpenRouter catalog (fetched once), falling back to the curated list offline.
 #[tauri::command]
-pub fn list_models() -> Vec<SttModel> {
-    MODELS.to_vec()
+pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<SttModel>, String> {
+    if std::ptr::eq(current(), MODELS) {
+        match state.stt.transcription_models().await {
+            Ok(live) if !live.is_empty() => set_live(&live),
+            Ok(_) => eprintln!("[models] empty live catalog; using curated list"),
+            Err(e) => eprintln!("[models] {e}; using curated list"),
+        }
+    }
+    Ok(current().to_vec())
 }
 
 #[tauri::command]
