@@ -362,10 +362,10 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                 match result {
                     Ok(t) => {
                         let mut text = t.text.trim().to_string();
-                        let (do_clean, do_smart) = {
+                        let (do_clean, do_smart, cleanup_model) = {
                             let state = app.state::<AppState>();
                             let s = state.settings.lock().unwrap();
-                            (s.clean_fillers, s.smart_corrections)
+                            (s.clean_fillers, s.smart_corrections, s.cleanup_model.clone())
                         };
                         if do_clean {
                             text = text::clean_fillers(&text);
@@ -377,12 +377,12 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                         if do_smart && !text.is_empty() {
                             let started = Instant::now();
                             let mut stats = crate::history::LlmStats {
-                                model: crate::stt::client::CLEANUP_MODEL.into(),
+                                model: cleanup_model.clone(),
                                 ttfb_ms: None,
                                 ms: 0,
                                 error: None,
                             };
-                            match rt.block_on(stt.smart_correct(&cfg.api_key, &text, &cfg.vocabulary)) {
+                            match rt.block_on(stt.smart_correct(&cfg.api_key, &cleanup_model, &text, &cfg.vocabulary)) {
                                 Ok(c) => {
                                     stats.ttfb_ms = Some(c.ttfb_ms);
                                     stats.ms = c.api_ms;

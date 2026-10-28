@@ -50,6 +50,7 @@ const launchAtLogin = $("launchAtLogin");
 const startMinimized = $("startMinimized");
 const cleanFillers = $("cleanFillers");
 const smartCorrections = $("smartCorrections");
+const cleanupModel = $("cleanupModel");
 const vocabInput = $("vocabInput");
 const vocabSuggestions = $("vocabSuggestions");
 const sugChips = $("sugChips");
@@ -290,6 +291,7 @@ function applySettings(s) {
   startMinimized.checked = s.start_minimized;
   cleanFillers.checked = s.clean_fillers;
   smartCorrections.checked = s.smart_corrections;
+  cleanupModel.value = s.cleanup_model;
   vocabInput.value = (s.vocabulary || []).join(", ");
   seedCount.textContent = s.seed_count;
   if (s.model) currentModel = s.model;
@@ -312,6 +314,7 @@ async function patchSettings() {
       clean_fillers: cleanFillers.checked,
       vocabulary: vocabInput.value.split(",").map((t) => t.trim()).filter(Boolean),
       smart_corrections: smartCorrections.checked,
+      cleanup_model: cleanupModel.value.trim(),
     },
   });
   renderCredentials(s);
@@ -351,6 +354,15 @@ async function init() {
   ]);
   models = modelList;
   renderHistory(history);
+  // Autocomplete only; the field accepts any model id.
+  invoke("list_cleanup_models").then((list) => {
+    $("cleanupModels").replaceChildren(...list.map(([id, name]) => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.label = name;
+      return opt;
+    }));
+  }).catch(() => {});
   renderBenchModelList();
 
   deviceSel.innerHTML =
@@ -422,7 +434,7 @@ modeSwitch.addEventListener("click", (e) => {
   patchSettings();
 });
 
-for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, vocabInput]) {
+for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, cleanupModel, vocabInput]) {
   el.addEventListener("change", patchSettings);
 }
 

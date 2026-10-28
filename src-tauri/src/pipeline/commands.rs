@@ -19,6 +19,12 @@ pub fn stop_listening(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Autocomplete for the cleanup-model field: OpenRouter's text models.
+#[tauri::command]
+pub async fn list_cleanup_models(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+    state.stt.chat_models().await
+}
+
 /// Live OpenRouter catalog (fetched once), falling back to the curated list offline.
 #[tauri::command]
 pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<SttModel>, String> {
@@ -59,6 +65,7 @@ pub struct UiSettings {
     /// Built-in seed terms (read-only, shown for reference).
     pub seed_count: usize,
     pub smart_corrections: bool,
+    pub cleanup_model: String,
 }
 
 /// Mutable subset the webview is allowed to change.
@@ -74,6 +81,7 @@ pub struct UiSettingsPatch {
     pub clean_fillers: Option<bool>,
     pub vocabulary: Option<Vec<String>>,
     pub smart_corrections: Option<bool>,
+    pub cleanup_model: Option<String>,
 }
 
 fn to_ui(settings: &Settings) -> UiSettings {
@@ -107,6 +115,7 @@ fn to_ui(settings: &Settings) -> UiSettings {
         vocabulary: settings.vocabulary.clone(),
         seed_count: crate::stt::vocab::SEED_TERMS.len(),
         smart_corrections: settings.smart_corrections,
+        cleanup_model: settings.cleanup_model.clone(),
     }
 }
 
@@ -150,6 +159,14 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: UiSetting
     }
     if let Some(smart) = patch.smart_corrections {
         settings.smart_corrections = smart;
+    }
+    if let Some(model) = patch.cleanup_model {
+        let model = model.trim();
+        settings.cleanup_model = if model.is_empty() {
+            crate::stt::client::DEFAULT_CLEANUP_MODEL.into()
+        } else {
+            model.into()
+        };
     }
     if let Some(login) = patch.launch_at_login {
         settings.launch_at_login = login;

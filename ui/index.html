@@ -126,8 +126,15 @@
           </label>
           <label class="check-row">
             <input type="checkbox" id="smartCorrections" />
-            Smart corrections — LLM fixes homophones &amp; tech terms (~300ms slower)
+            Smart cleanup — LLM fixes misheard words, grammar, false starts &amp; "no wait" corrections (slower)
           </label>
+          <div class="field">
+            <label for="cleanupModel">Cleanup model</label>
+            <input id="cleanupModel" type="text" list="cleanupModels" spellcheck="false"
+                   placeholder="google/gemini-3.1-flash-lite"
+                   title="Any OpenRouter text model; empty restores the default" />
+            <datalist id="cleanupModels"></datalist>
+          </div>
         </section>
 
         <!-- Credentials -->

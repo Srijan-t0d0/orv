@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::stt::client::DEFAULT_CLEANUP_MODEL;
 use crate::stt::models::DEFAULT_MODEL;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -42,6 +43,8 @@ pub struct Settings {
     /// fix homophones and tech terms using context. Adds ~300ms + a
     /// fraction of a cent per dictation. Off by default (latency-first).
     pub smart_corrections: bool,
+    /// OpenRouter model for the smart-corrections pass.
+    pub cleanup_model: String,
 }
 
 impl Default for Settings {
@@ -62,6 +65,7 @@ impl Default for Settings {
             clean_fillers: true,
             vocabulary: Vec::new(),
             smart_corrections: false,
+            cleanup_model: DEFAULT_CLEANUP_MODEL.into(),
         }
     }
 }

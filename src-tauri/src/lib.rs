@@ -95,6 +95,7 @@ pub fn run() {
             pipeline::commands::start_listening,
             pipeline::commands::stop_listening,
             pipeline::commands::list_models,
+            pipeline::commands::list_cleanup_models,
             pipeline::commands::get_settings,
             pipeline::commands::set_settings,
             pipeline::commands::set_api_key,
