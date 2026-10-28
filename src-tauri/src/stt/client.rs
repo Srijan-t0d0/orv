@@ -54,9 +54,10 @@ pub struct Transcription {
 const CHAT_TRANSCRIBE_PROMPT: &str =
     "Transcribe this audio verbatim. Output only the transcript text, nothing else.";
 
-/// Default model for the "Smart corrections" LLM cleanup pass: cheapest of
-/// the current Gemini Flash Lite line — ~a hundredth of a cent per dictation.
-pub const DEFAULT_CLEANUP_MODEL: &str = "google/gemini-3.1-flash-lite";
+/// Default model for the "Smart corrections" LLM cleanup pass. Benchmarked
+/// 2026-10-28 on the cleanup prompt: matched Gemini 3.1 Flash Lite's output
+/// (vocabulary, self-corrections, wording) at under half the cost.
+pub const DEFAULT_CLEANUP_MODEL: &str = "google/gemma-4-26b-a4b-it";
 
 /// Cleanup instructions, adapted from OpenWhispr's cleanup prompt (MIT,
 /// github.com/OpenWhispr/openwhispr, src/locales/en/prompts.json).
@@ -328,6 +329,46 @@ impl SttClient {
         })
     }
 
+    /// POST a chat completion with reasoning off and the highest-throughput
+    /// host. Default routing weighs price, so a slow tier can win (Gemini's
+    /// Vertex Flex host showed a 17.8 s median). Models whose reasoning is
+    /// mandatory reject `enabled: false` with a 400; resend once without it.
+    async fn send_chat(
+        &self,
+        api_key: &str,
+        mut body: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<reqwest::Response, String> {
+        body["reasoning"] = serde_json::json!({ "enabled": false });
+        body["provider"] = serde_json::json!({ "sort": "throughput" });
+        loop {
+            let resp = self
+                .http
+                .post(format!("{BASE_URL}/chat/completions"))
+                .bearer_auth(api_key)
+                .header("HTTP-Referer", REFERER)
+                .header("X-Title", TITLE)
+                .timeout(timeout)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("request failed: {e}"))?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            let text = resp.text().await.unwrap_or_default();
+            if status == 400 && text.contains("Reasoning is mandatory") {
+                if let Some(fields) = body.as_object_mut() {
+                    if fields.remove("reasoning").is_some() {
+                        continue;
+                    }
+                }
+            }
+            return Err(format!("OpenRouter error {status}: {text}"));
+        }
+    }
+
     /// Streaming transcription via /chat/completions (SSE). Calls `on_delta`
     /// with each text fragment as it arrives; returns the final transcript.
     pub async fn transcribe_streaming(
@@ -354,22 +395,7 @@ impl SttClient {
         });
 
         let started = Instant::now();
-        let resp = self
-            .http
-            .post(format!("{BASE_URL}/chat/completions"))
-            .bearer_auth(api_key)
-            .header("HTTP-Referer", REFERER)
-            .header("X-Title", TITLE)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("OpenRouter error {status}: {text}"));
-        }
+        let resp = self.send_chat(api_key, body, Duration::from_secs(60)).await?;
 
         let mut ttfb_ms = None;
         let full = read_sse(resp, |delta| {
@@ -413,21 +439,11 @@ impl SttClient {
         });
 
         let started = Instant::now();
+        // Cleanup must never stall dictation.
         let resp = self
-            .http
-            .post(format!("{BASE_URL}/chat/completions"))
-            .bearer_auth(api_key)
-            .header("HTTP-Referer", REFERER)
-            .header("X-Title", TITLE)
-            .timeout(Duration::from_secs(6)) // cleanup must never stall dictation
-            .json(&body)
-            .send()
+            .send_chat(api_key, body, Duration::from_secs(6))
             .await
-            .map_err(|e| format!("cleanup request failed: {e}"))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("cleanup error {}", resp.status()));
-        }
+            .map_err(|e| format!("cleanup {e}"))?;
         let mut ttfb_ms = None;
         let corrected = read_sse(resp, |_| {
             ttfb_ms.get_or_insert(started.elapsed().as_millis() as u64);

@@ -53,7 +53,7 @@ const smartCorrections = $("smartCorrections");
 const cleanupSelect = $("cleanupSelect");
 const cleanupMenu = $("cleanupMenu");
 const cleanupSearch = $("cleanupSearch");
-const DEFAULT_CLEANUP_MODEL = "google/gemini-3.1-flash-lite";
+const DEFAULT_CLEANUP_MODEL = "google/gemma-4-26b-a4b-it";
 let cleanupModels = [];
 let cleanupModel = DEFAULT_CLEANUP_MODEL;
 const accentInput = $("accent");
@@ -328,11 +328,10 @@ modelSelect.addEventListener("click", () =>
 
 /* ── cleanup-model picker ─────────────────────────────── */
 
-// Fast, cheap, non-reasoning picks; dropped if OpenRouter retires them.
+// Benchmarked 2026-10-28 on the cleanup prompt: only these kept vocabulary,
+// self-corrections and wording intact. Dropped if OpenRouter retires them.
 const SUGGESTED_CLEANUP = [
-  "google/gemini-3.1-flash-lite", "openai/gpt-4.1-nano",
-  "mistralai/mistral-small-3.2-24b-instruct", "meta-llama/llama-3.3-70b-instruct",
-  "anthropic/claude-haiku-4.5",
+  "google/gemma-4-26b-a4b-it", "google/gemma-4-31b-it", "google/gemini-3.1-flash-lite",
 ];
 
 // Cents, plus a third decimal only when it carries information ($0.075).
@@ -381,7 +380,7 @@ function renderCleanupMenu() {
     ? `<div class="model-row" data-id="${attr(cleanupSearch.value.trim())}"><div class="row-main"><span class="row-name">Use “${attr(cleanupSearch.value.trim())}”</span><span class="row-note">Custom model id</span></div></div>`
     : "";
   $("cleanupRows").innerHTML = custom +
-    (suggested.length ? `<div class="menu-section">SUGGESTED · FAST AND CHEAP</div>` + suggested.map(cleanupRowHtml).join("") : "") +
+    (suggested.length ? `<div class="menu-section">SUGGESTED · TESTED FOR CLEANUP</div>` + suggested.map(cleanupRowHtml).join("") : "") +
     (rest.length ? `<div class="menu-section">ALL MODELS · ${rest.length}</div>` + rest.map(cleanupRowHtml).join("") : "") +
     (!custom && !suggested.length && !rest.length ? `<div class="menu-section">NO MATCHES</div>` : "");
 }

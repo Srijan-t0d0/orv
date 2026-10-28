@@ -104,11 +104,14 @@ In increasing power:
 2. chat-transport models (audio via `/chat/completions`) get the hints in
    their transcription instruction, which they do follow
 3. an LLM cleanup pass — `SttClient::smart_correct` sends the transcript to
-   a configurable model (default `google/gemini-3.1-flash-lite`) with a
+   a configurable model (default `google/gemma-4-26b-a4b-it`) with a
    cleanup prompt adapted from OpenWhispr's, the hints, a 6s timeout, and a
    length sanity check so failure falls back to the raw transcript. The
    only fix for homophones (eye/I) and accent mis-hearings that needs
-   sentence context.
+   sentence context. Chat requests set `reasoning.enabled: false` (resent
+   without it for models where reasoning is mandatory) and
+   `provider.sort: "throughput"`, since default price-weighted routing can
+   land on a slow tier.
 
 ## 5. OAuth PKCE ("Log in with OpenRouter")
 
