@@ -17,6 +17,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 const HID_PAGE_BUTTON: u32 = 0x09;
+const PERMISSION_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Pressed-state bitmap: bit N = mouse button N (CG numbering: 0=left).
 static BUTTONS: AtomicU32 = AtomicU32::new(0);
@@ -59,6 +60,7 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     static kCFRunLoopDefaultMode: CFStringRef;
+    fn CFRelease(value: *const c_void);
     fn CFRunLoopGetCurrent() -> CFRunLoopRef;
     fn CFRunLoopRun();
 }
@@ -100,24 +102,34 @@ pub fn spawn_listener() {
     std::thread::Builder::new()
         .name("hid-buttons".into())
         .spawn(|| unsafe {
-            let manager = IOHIDManagerCreate(std::ptr::null(), 0);
-            if manager.is_null() {
-                eprintln!("[hid] IOHIDManagerCreate failed");
-                RUNNING.store(false, Ordering::SeqCst);
-                return;
-            }
-            IOHIDManagerSetDeviceMatching(manager, std::ptr::null()); // all devices
+            // Retry until Input Monitoring is granted, so granting it takes
+            // effect without restarting the app.
+            let mut warned = false;
+            let manager = loop {
+                let manager = IOHIDManagerCreate(std::ptr::null(), 0);
+                if manager.is_null() {
+                    eprintln!("[hid] IOHIDManagerCreate failed");
+                    RUNNING.store(false, Ordering::SeqCst);
+                    return;
+                }
+                IOHIDManagerSetDeviceMatching(manager, std::ptr::null()); // all devices
+                let status = IOHIDManagerOpen(manager, 0);
+                if status == 0 {
+                    break manager;
+                }
+                CFRelease(manager);
+                if !warned {
+                    warned = true;
+                    eprintln!(
+                        "[hid] IOHIDManagerOpen failed ({status:#x}) — grant Input Monitoring \
+                         permission in System Settings → Privacy & Security; retrying"
+                    );
+                }
+                std::thread::sleep(PERMISSION_RETRY);
+            };
             IOHIDManagerRegisterInputValueCallback(manager, input_value_cb, std::ptr::null_mut());
             IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-            let status = IOHIDManagerOpen(manager, 0);
-            if status != 0 {
-                eprintln!(
-                    "[hid] IOHIDManagerOpen failed ({status:#x}) — grant Input Monitoring \
-                     permission in System Settings → Privacy & Security"
-                );
-            } else {
-                eprintln!("[hid] raw HID button listener up");
-            }
+            eprintln!("[hid] raw HID button listener up");
             CFRunLoopRun();
         })
         .ok();

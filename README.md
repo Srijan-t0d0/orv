@@ -23,10 +23,10 @@ Settings live at `~/Library/Application Support/openroutervoice/settings.json` o
 Quit the app before editing and restart afterward. That file can contain your API key;
 keep it, recordings, history, and logs out of Git. Never commit credentials.
 
-Local ad-hoc builds change their signing identity when rebuilt. macOS may require
-re-granting Accessibility and Input Monitoring, followed by fully quitting and reopening
-this app. Closing its window only hides it. The hotkey listener does not currently recover
-from a missing startup permission without a restart.
+Local ad-hoc builds change their signing identity when rebuilt, so macOS may require
+re-granting Accessibility and Input Monitoring after each install. The raw-HID mouse-button
+listener and the F13–F20 key tap retry every 2 s until permission is granted, so they recover
+without a restart.
 
 Verification: `cd src-tauri && cargo test --lib`, a macOS app-bundle build, and a manual
 focused-input dictation test. The clipboard restore uses a bounded 350 ms grace period;

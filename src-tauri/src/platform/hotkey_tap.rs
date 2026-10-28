@@ -160,15 +160,24 @@ pub fn spawn() -> Receiver<(Keycode, bool)> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let result = std::thread::Builder::new().name("hotkey-tap".into()).spawn(move || unsafe {
         let mut context = Context { tap: null_mut(), sender };
-        // Session tap, head insertion, default (suppress-enabled) options.
-        let tap = CGEventTapCreate(1, 0, 0, (1 << 10) | (1 << 11), callback,
-            &mut context as *mut Context as Ref);
-        if tap.is_null() {
-            ACTIVE.store(false, Ordering::SeqCst);
-            eprintln!("[hotkey-tap] CGEventTapCreate failed; check Accessibility/Input Monitoring permissions");
-            let _ = ready_sender.send(());
-            return;
-        }
+        // Polling covers the keys until the tap exists; release startup at the
+        // first failure and keep retrying so a later permission grant applies
+        // without restarting the app.
+        let mut ready_sender = Some(ready_sender);
+        let tap = loop {
+            // Session tap, head insertion, default (suppress-enabled) options.
+            let tap = CGEventTapCreate(1, 0, 0, (1 << 10) | (1 << 11), callback,
+                &mut context as *mut Context as Ref);
+            if !tap.is_null() {
+                break tap;
+            }
+            if let Some(ready) = ready_sender.take() {
+                ACTIVE.store(false, Ordering::SeqCst);
+                eprintln!("[hotkey-tap] CGEventTapCreate failed; check Accessibility/Input Monitoring permissions; retrying");
+                let _ = ready.send(());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        };
         context.tap = tap;
         let source = CFMachPortCreateRunLoopSource(null(), tap, 0);
         if source.is_null() {
@@ -176,7 +185,9 @@ pub fn spawn() -> Receiver<(Keycode, bool)> {
             CFRelease(tap);
             ACTIVE.store(false, Ordering::SeqCst);
             eprintln!("[hotkey-tap] CFMachPortCreateRunLoopSource failed");
-            let _ = ready_sender.send(());
+            if let Some(ready) = ready_sender.take() {
+                let _ = ready.send(());
+            }
             return;
         }
         let run_loop = CFRunLoopGetCurrent();
@@ -184,7 +195,9 @@ pub fn spawn() -> Receiver<(Keycode, bool)> {
         CGEventTapEnable(tap, true);
         ACTIVE.store(true, Ordering::SeqCst);
         eprintln!("[hotkey-tap] function-key suppression active");
-        let _ = ready_sender.send(());
+        if let Some(ready) = ready_sender.take() {
+            let _ = ready.send(());
+        }
         CFRunLoopRun();
         CGEventTapEnable(tap, false);
         CFMachPortInvalidate(tap);
