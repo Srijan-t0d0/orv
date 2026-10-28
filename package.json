@@ -5,7 +5,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:mac": "APPLE_SIGNING_IDENTITY='ORV Local Signing' tauri build --bundles app"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

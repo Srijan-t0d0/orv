@@ -17,16 +17,18 @@ The upstream is a reference app; this fork adds fixes tested in everyday dictati
 - Consume bound F13–F20 hotkeys on macOS so mouse-emitted function keys do not type
   private-use glyphs into the focused app. Capture also consumes those keys. Ordinary
   keys and mouse buttons retain polling behavior; they are not suppressed.
-- Include a native macOS icon so `npm run build -- --bundles app` works without local overrides.
+- Include a native macOS icon so `npm run build:mac` works without local overrides.
 
 Settings live at `~/Library/Application Support/openroutervoice/settings.json` on macOS.
 Quit the app before editing and restart afterward. That file can contain your API key;
 keep it, recordings, history, and logs out of Git. Never commit credentials.
 
-Local ad-hoc builds change their signing identity when rebuilt, so macOS may require
-re-granting Accessibility and Input Monitoring after each install. The raw-HID mouse-button
-listener and the F13–F20 key tap retry every 2 s until permission is granted, so they recover
-without a restart.
+Ad-hoc builds get a new signing identity on every rebuild, so macOS drops Accessibility,
+Input Monitoring and Microphone grants after each install. Sign with a stable local identity
+instead: run `scripts/create-signing-cert.sh` once (self-signed, login keychain), then build
+with `npm run build:mac`. Grants then survive rebuilds. The raw-HID mouse-button listener
+and the F13–F20 key tap retry every 2 s until permission is granted, so granting it needs
+no restart.
 
 Verification: `cd src-tauri && cargo test --lib`, a macOS app-bundle build, and a manual
 focused-input dictation test. The clipboard restore uses a bounded 350 ms grace period;
