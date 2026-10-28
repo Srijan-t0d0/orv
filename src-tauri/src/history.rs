@@ -22,12 +22,23 @@ pub struct HistoryEntry {
     /// Unix millis when the transcript completed.
     pub at: u64,
     pub text: String,
+    /// Hotkey release → text inserted. Older entries measured from
+    /// recording close → text ready.
     pub total_ms: u64,
+    /// Hotkey release → recording closed.
+    #[serde(default)]
+    pub finish_ms: Option<u64>,
+    /// Recording closed → speech-to-text request sent (WAV encoding).
+    #[serde(default)]
+    pub prep_ms: Option<u64>,
     /// Speech-to-text duration (request sent → transcript received).
     pub api_ms: u64,
     /// Speech-to-text latency (request sent → first byte). Absent in old entries.
     #[serde(default)]
     pub stt_ttfb_ms: Option<u64>,
+    /// Text ready → paste keystroke sent; None when not typing into an app.
+    #[serde(default)]
+    pub insert_ms: Option<u64>,
     pub audio_secs: f32,
     pub model: String,
     /// Smart-corrections pass, when it ran.

@@ -98,7 +98,7 @@ function utteranceDiv(id) {
     div = document.createElement("div");
     div.className = "utterance";
     div.dataset.utt = id;
-    div.innerHTML = `<div class="text"></div><div class="meta"></div>`;
+    div.innerHTML = `<div class="text"></div><div class="timing"></div>`;
     transcriptEl.appendChild(div);
   }
   return div;
@@ -108,7 +108,7 @@ function showPartial(ev) {
   const div = utteranceDiv(ev.id);
   div.classList.add("partial");
   div.querySelector(".text").textContent = ev.text;
-  div.querySelector(".meta").innerHTML = `<span class="streaming">streaming…</span>`;
+  div.querySelector(".timing").innerHTML = `<div class="meta"><span class="streaming">streaming…</span></div>`;
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
@@ -116,35 +116,113 @@ function showPartial(ev) {
 const secs = (ms) => `${(ms / 1000).toFixed(ms < 1000 ? 2 : 1)}s`;
 const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 
-// The meta line under a transcript: the wait you felt, then where it went.
-// Each label's tooltip says what the number measures.
-function timingHtml(e, when) {
-  const slow = e.total_ms > 1200 ? " slow" : "";
-  const sttTip = `Speech-to-text (${e.model}) turning your ${e.audio_secs.toFixed(1)}s recording into text` +
-    (e.stt_ttfb_ms != null ? `; the server started replying after ${secs(e.stt_ttfb_ms)}` : "");
-  let cleanup = "";
-  if (e.llm) {
-    const tip = e.llm.error
-      ? `Smart cleanup failed, so the raw transcript was used: ${e.llm.error}`
-      : `Smart cleanup (${e.llm.model}) fixing the transcript` +
-        (e.llm.ttfb_ms != null ? `; its first words arrived after ${secs(e.llm.ttfb_ms)}` : "");
-    cleanup = `<span class="stage${e.llm.error ? " failed" : ""}" title="${attr(tip)}">` +
-      `Cleanup <b>${secs(e.llm.ms)}</b>${e.llm.error ? " · failed" : ""}</span>`;
+/* ── timing timeline ─────────────────────────────────── */
+
+// From hotkey release to the paste, each run is four back-to-back stages.
+// Within speech-to-text and cleanup, the hatched part is waiting for the
+// first response (latency); the solid part is receiving the rest.
+const STAGE_LABEL = { overhead: "Overhead", stt: "Speech-to-text", llm: "Cleanup", insert: "Paste" };
+const runs = []; // every rendered run, oldest first
+
+function stagesOf(e) {
+  const stt = e.api_ms;
+  const llm = e.llm ? e.llm.ms : 0;
+  const insert = e.insert_ms ?? 0;
+  return [
+    { key: "overhead", ms: Math.max(0, e.total_ms - stt - llm - insert) },
+    { key: "stt", ms: stt, wait: Math.min(e.stt_ttfb_ms ?? stt, stt) },
+    { key: "llm", ms: llm, wait: e.llm ? Math.min(e.llm.ttfb_ms ?? llm, llm) : 0, failed: e.llm && e.llm.error },
+    { key: "insert", ms: insert },
+  ].filter((s) => s.ms >= 10); // runs before overhead was measured leave ~5 ms of rounding
+}
+
+function stageTip(s, total) {
+  const head = `${STAGE_LABEL[s.key]} ${secs(s.ms)} (${Math.round((s.ms / total) * 100)}% of the wait)`;
+  switch (s.key) {
+    case "overhead": return `${head}: closing the recording and preparing the audio`;
+    case "insert": return `${head}: switching back to your app and pasting`;
+    case "llm":
+      if (s.failed) return `${head}: failed, so the raw transcript was used (${s.failed})`;
+      return `${head}: waited ${secs(s.wait)} for the first word, then ${secs(s.ms - s.wait)} receiving the rest`;
+    default:
+      return `${head}: waited ${secs(s.wait)} for the first response, then ${secs(s.ms - s.wait)} receiving the text`;
   }
+}
+
+function barHtml(stages, total) {
+  return `<div class="tl-track">` + stages.map((s) => {
+    const parts = s.wait
+      ? `<span class="tl-wait" style="flex-grow:${s.wait}"></span><span class="tl-recv" style="flex-grow:${s.ms - s.wait}"></span>`
+      : `<span class="tl-recv" style="flex-grow:1"></span>`;
+    return `<span class="tl-seg ${s.key}" style="flex-grow:${s.ms}" title="${attr(stageTip(s, total))}">${parts}</span>`;
+  }).join("") + `</div>`;
+}
+
+function legendHtml(stages, total) {
+  return stages.map((s) =>
+    `<span class="lg" title="${attr(stageTip(s, total))}"><i class="sw ${s.key}"></i>${STAGE_LABEL[s.key]} <b>${secs(s.ms)}</b> <em>${Math.round((s.ms / total) * 100)}%</em>${s.failed ? " · failed" : ""}</span>`
+  ).join("");
+}
+
+// The chart + legend under a transcript. Bars share one time scale
+// (see rescaleBars) so a slow run is visibly longer than a fast one.
+function timingHtml(e, when) {
+  const stages = stagesOf(e);
+  const slow = e.total_ms > 1200 ? " slow" : "";
   return `
-      ${when ? `<span>${when}</span>` : ""}
-      <span class="latency${slow}" title="From releasing the hotkey until the text was ready to insert">Total <b>${secs(e.total_ms)}</b></span>
-      <span class="stage" title="${attr(sttTip)}">Speech-to-text <b>${secs(e.api_ms)}</b></span>
-      ${cleanup}
+    <div class="tl" data-total="${e.total_ms}">${barHtml(stages, e.total_ms)}</div>
+    <div class="meta">
+      <span class="latency${slow}" title="From releasing the hotkey until the text was pasted">Total <b>${secs(e.total_ms)}</b></span>
+      ${legendHtml(stages, e.total_ms)}
       <span title="Length of your recording">${e.audio_secs.toFixed(1)}s of audio</span>
-      <span class="model">${attr(e.model)}</span>`;
+      <span class="model">${attr(e.model)}</span>
+      ${when ? `<span>${when}</span>` : ""}
+    </div>`;
+}
+
+function rescaleBars() {
+  const max = Math.max(...runs.map((r) => r.total_ms), 1);
+  for (const el of transcriptEl.querySelectorAll(".tl[data-total]")) {
+    el.style.width = `${Math.max(6, (el.dataset.total / max) * 100)}%`;
+  }
+}
+
+// Last 10 runs: typical and slowest total, plus the average split by stage.
+function renderSpeedSummary() {
+  const recent = runs.slice(-10);
+  const box = $("speedSummary");
+  box.classList.toggle("hidden", recent.length === 0);
+  if (!recent.length) return;
+  const totals = recent.map((r) => r.total_ms).sort((a, b) => a - b);
+  const median = totals[Math.floor((totals.length - 1) / 2)];
+  const avg = {};
+  for (const r of recent) {
+    for (const s of stagesOf(r)) {
+      avg[s.key] ??= { key: s.key, ms: 0, wait: 0 };
+      avg[s.key].ms += s.ms / recent.length;
+      avg[s.key].wait += (s.wait ?? 0) / recent.length;
+    }
+  }
+  const stages = Object.keys(STAGE_LABEL).filter((k) => avg[k]).map((k) => avg[k]);
+  const total = stages.reduce((sum, s) => sum + s.ms, 0);
+  box.innerHTML = `
+    <div class="speed-head">
+      <span>Last ${recent.length} dictation${recent.length > 1 ? "s" : ""}</span>
+      <span title="Median: half your dictations were faster than this">typical <b>${secs(median)}</b></span>
+      <span>slowest <b>${secs(totals[totals.length - 1])}</b></span>
+    </div>
+    <div class="tl">${barHtml(stages, total)}</div>
+    <div class="meta">${legendHtml(stages, total)}<span class="hatch-note"><i class="sw hatch"></i>waiting for first response</span></div>`;
 }
 
 function addUtterance(ev) {
   const div = utteranceDiv(ev.id);
   div.classList.remove("partial");
   div.querySelector(".text").textContent = ev.text;
-  div.querySelector(".meta").innerHTML = timingHtml(ev);
+  div.querySelector(".timing").innerHTML = timingHtml(ev);
+  runs.push(ev);
+  rescaleBars();
+  renderSpeedSummary();
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
   const best = liveLatency.get(ev.model);
@@ -463,10 +541,13 @@ function renderHistory(entries) {
     });
     div.innerHTML = `
       <div class="text"></div>
-      <div class="meta">${timingHtml(h, when)}</div>`;
+      <div class="timing">${timingHtml(h, when)}</div>`;
     div.querySelector(".text").textContent = h.text;
     transcriptEl.appendChild(div);
+    runs.push(h);
   }
+  rescaleBars();
+  renderSpeedSummary();
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 

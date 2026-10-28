@@ -87,13 +87,21 @@ pub fn input_access_allowed() -> bool {
 /// Consecutive dictations join naturally: if the previous transcript ended
 /// without trailing whitespace and this one starts with a word character,
 /// a single space is prepended.
-pub fn type_text(text: &str, target_pid: Option<i32>, app: tauri::AppHandle) {
+///
+/// The returned receiver fires once the text has been sent to the app; it
+/// disconnects without firing if insertion fails.
+pub fn type_text(
+    text: &str,
+    target_pid: Option<i32>,
+    app: tauri::AppHandle,
+) -> std::sync::mpsc::Receiver<()> {
     #[cfg(not(target_os = "macos"))]
     use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
 
+    let (sent, sent_rx) = std::sync::mpsc::channel();
     if !input_access_allowed() {
         eprintln!("[type] BLOCKED: this running process does not have Accessibility access");
-        return;
+        return sent_rx;
     }
     let mut text = text.to_string();
     {
@@ -115,7 +123,7 @@ pub fn type_text(text: &str, target_pid: Option<i32>, app: tauri::AppHandle) {
 
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
-        match crate::platform::paste::paste_text(&text, target_pid, &app) {
+        match crate::platform::paste::paste_text(&text, target_pid, &app, sent) {
             Ok(()) => eprintln!("[paste] submitted {} chars", text.chars().count()),
             Err(e) => eprintln!("[paste] failed: {e}"),
         }
@@ -126,6 +134,7 @@ pub fn type_text(text: &str, target_pid: Option<i32>, app: tauri::AppHandle) {
             if let Err(e) = enigo.text(&text) {
                 eprintln!("[type] failed to type transcript: {e}");
             } else {
+                let _ = sent.send(());
                 eprintln!("[type] submitted {} chars as keyboard events (delivery not verified)", text.chars().count());
             }
         }
@@ -134,4 +143,5 @@ pub fn type_text(text: &str, target_pid: Option<i32>, app: tauri::AppHandle) {
              System Settings → Privacy & Security"
         ),
     });
+    sent_rx
 }

@@ -235,7 +235,6 @@ h1 { font-size: 13.5px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .meta b { font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; color: var(--muted); }
 .meta .latency b { color: var(--positive); }
 .meta .latency.slow b { color: var(--warning); }
-.meta .stage.failed { color: var(--warning); }
 .meta [title] { cursor: help; }
 .meta .model { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; }
 .meta .streaming { color: var(--volt); animation: pulse 1.2s ease-in-out infinite; }
@@ -605,3 +604,47 @@ button.danger:hover { border-color: var(--negative); }
   border-radius: 4px; padding: 0 4px; margin-left: 4px;
   vertical-align: 1px;
 }
+
+/* ── timing timeline (stage colors validated on --ink: dataviz palette, dark steps) ── */
+:root {
+  --tl-overhead: rgba(252, 252, 254, 0.3);
+  --tl-stt: #3987e5;
+  --tl-llm: #d95926;
+  --tl-insert: #199e70;
+}
+.timing { display: flex; flex-direction: column; gap: 6px; }
+.tl { min-width: 6%; transition: width 200ms; }
+.tl-track { display: flex; gap: 2px; height: 10px; border-radius: 4px; overflow: hidden; }
+.tl-seg { display: flex; min-width: 3px; flex-basis: 0; cursor: help; }
+.tl-seg > span { flex-basis: 0; }
+.tl-seg.overhead { --c: var(--tl-overhead); }
+.tl-seg.stt { --c: var(--tl-stt); }
+.tl-seg.llm { --c: var(--tl-llm); }
+.tl-seg.insert { --c: var(--tl-insert); }
+.tl-recv { background: var(--c); }
+.tl-wait, .sw.hatch {
+  background: repeating-linear-gradient(135deg, var(--c) 0 2px, transparent 2px 5px);
+  box-shadow: inset 0 0 0 20px color-mix(in srgb, var(--c) 22%, transparent);
+}
+.lg { display: inline-flex; align-items: center; gap: 5px; }
+.lg em { font-style: normal; color: var(--faint); font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; }
+.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.sw.overhead { background: var(--tl-overhead); }
+.sw.stt { background: var(--tl-stt); }
+.sw.llm { background: var(--tl-llm); }
+.sw.insert { background: var(--tl-insert); }
+.sw.hatch { --c: var(--fg); width: 14px; }
+.hatch-note { display: inline-flex; align-items: center; gap: 5px; }
+.speed {
+  margin: 0 20px 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.speed .tl { width: 100%; }
+.speed-head { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.speed-head span:first-child { color: var(--fg); font-weight: 500; margin-right: auto; }
+.speed-head b, .speed .meta b { font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; color: var(--fg); }
+.speed .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--faint); }

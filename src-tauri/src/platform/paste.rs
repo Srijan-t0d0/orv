@@ -28,12 +28,13 @@ pub fn paste_text(
     text: &str,
     target: Option<i32>,
     handle: &tauri::AppHandle,
+    sent: std::sync::mpsc::Sender<()>,
 ) -> Result<(), String> {
     let _lock = PASTE_LOCK.lock().map_err(|_| "paste lock poisoned")?;
     let target = target.ok_or("No external input app was focused when recording started")?;
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-        let result = paste_with_pool(text, target, handle);
+        let result = paste_with_pool(text, target, handle, sent);
         let _: () = msg_send![pool, drain];
         result
     }
@@ -43,6 +44,7 @@ unsafe fn paste_with_pool(
     text: &str,
     target: i32,
     handle: &tauri::AppHandle,
+    sent: std::sync::mpsc::Sender<()>,
 ) -> Result<(), String> {
     let app: *mut Object =
         msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: target];
@@ -115,6 +117,9 @@ unsafe fn paste_with_pool(
     } else {
         Err("Could not write transcript to clipboard".into())
     };
+    if result.is_ok() {
+        let _ = sent.send(());
+    }
     // ponytail: bounded paste-read grace; use AX insertion if a target app reads later.
     if written {
         std::thread::sleep(Duration::from_millis(350));

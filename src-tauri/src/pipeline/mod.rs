@@ -4,7 +4,7 @@ pub mod text;
 pub use text::reset_continuity;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -29,10 +29,13 @@ const LEVEL_INTERVAL: Duration = Duration::from_millis(60);
 /// Running pipeline; dropping/stopping tears everything down.
 pub struct PipelineHandle {
     stop: Arc<AtomicBool>,
+    /// When the user released the hotkey (or clicked stop): t=0 of the timeline.
+    stopped_at: Arc<OnceLock<Instant>>,
 }
 
 impl PipelineHandle {
     pub fn stop(&self) {
+        let _ = self.stopped_at.set(Instant::now());
         self.stop.store(true, Ordering::SeqCst);
     }
 }
@@ -41,11 +44,14 @@ impl PipelineHandle {
 struct TranscriptEvent {
     id: u64,
     text: String,
-    /// End-of-speech → text available, in ms (what the user actually feels).
+    /// Hotkey release → text inserted (or ready, when not typing), in ms.
     total_ms: u64,
+    finish_ms: u64,
+    prep_ms: u64,
     /// HTTP round-trip portion.
     api_ms: u64,
     stt_ttfb_ms: u64,
+    insert_ms: Option<u64>,
     audio_secs: f32,
     model: String,
     llm: Option<crate::history::LlmStats>,
@@ -188,6 +194,8 @@ pub fn toggle(app: &AppHandle) {
 pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<PipelineHandle, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
+    let stopped_at = Arc::new(OnceLock::new());
+    let stopped_at_thread = stopped_at.clone();
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
 
@@ -347,12 +355,15 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
             if heard_speech && hold_buffer.len() > TARGET_SAMPLE_RATE as usize / 5 {
                 emit_status(&app, "transcribing", None);
                 let end_of_speech = Instant::now();
+                let released = stopped_at_thread.get().copied().unwrap_or(end_of_speech);
+                let finish_ms = end_of_speech.duration_since(released).as_millis() as u64;
                 let wav = encode::wav_encode_16k(&hold_buffer);
                 eprintln!(
                     "[stt] #{session_id} FINAL pass ({audio_secs:.2}s, {} KB) to {}",
                     wav.len() / 1024,
                     cfg.model
                 );
+                let prep_ms = end_of_speech.elapsed().as_millis() as u64;
                 let result = rt.block_on(transcribe_any(
                     &stt,
                     &cfg.api_key,
@@ -430,11 +441,18 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                             }
                             let type_into_app =
                                 app.state::<AppState>().settings.lock().unwrap().type_into_app;
+                            // Wait only until the keystroke is sent, not for the
+                            // clipboard-restore grace that follows it.
+                            let mut insert_ms = None;
                             if type_into_app {
                                 eprintln!("[stt] #{session_id} typing transcript into focused app");
-                                text::type_text(&text, cfg.target_pid, app.clone());
+                                let started = Instant::now();
+                                let sent = text::type_text(&text, cfg.target_pid, app.clone());
+                                if sent.recv_timeout(Duration::from_secs(3)).is_ok() {
+                                    insert_ms = Some(started.elapsed().as_millis() as u64);
+                                }
                             }
-                            let total_ms = end_of_speech.elapsed().as_millis() as u64;
+                            let total_ms = released.elapsed().as_millis() as u64;
                             // Durable history: survives restarts.
                             crate::history::append(&crate::history::HistoryEntry {
                                 at: std::time::SystemTime::now()
@@ -443,8 +461,11 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                     .unwrap_or(0),
                                 text: text.clone(),
                                 total_ms,
+                                finish_ms: Some(finish_ms),
+                                prep_ms: Some(prep_ms),
                                 api_ms: t.api_ms,
                                 stt_ttfb_ms: Some(t.ttfb_ms),
+                                insert_ms,
                                 audio_secs: t.audio_secs,
                                 model: t.model.clone(),
                                 llm: llm.clone(),
@@ -455,8 +476,11 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
                                     id: session_id,
                                     text,
                                     total_ms,
+                                    finish_ms,
+                                    prep_ms,
                                     api_ms: t.api_ms,
                                     stt_ttfb_ms: t.ttfb_ms,
+                                    insert_ms,
                                     audio_secs: t.audio_secs,
                                     model: t.model,
                                     llm,
@@ -480,7 +504,7 @@ pub fn start(app: AppHandle, stt: SttClient, cfg: PipelineConfig) -> Result<Pipe
         })
         .map_err(|e| e.to_string())?;
 
-    Ok(PipelineHandle { stop })
+    Ok(PipelineHandle { stop, stopped_at })
 }
 
 /// Transcribe via whichever transport the model uses. Rolling preview
