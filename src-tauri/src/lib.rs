@@ -59,6 +59,9 @@ pub fn run() {
             platform::traffic::setup(app.handle());
             // Menu-bar presence — the app is primarily a background service.
             platform::tray::setup(app.handle())?;
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_zoom(platform::UI_ZOOM);
+            }
 
             let settings = app.state::<AppState>().settings.lock().unwrap().clone();
 

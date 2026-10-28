@@ -12,6 +12,10 @@
 //! - `overlay` — floating dictation pill (transparent click-through window)
 //! - `traffic` — macOS titlebar traffic-light repositioning
 
+/// Main-window webview zoom. The UI is laid out in small fixed px sizes;
+/// zooming scales it evenly. The native titlebar math in `traffic` uses it.
+pub const UI_ZOOM: f64 = 1.15;
+
 pub mod hotkey;
 pub mod overlay;
 pub mod tray;

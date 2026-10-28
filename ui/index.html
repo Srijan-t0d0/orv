@@ -65,6 +65,7 @@
         <section class="panel-page on" data-panel="model">
           <h2>Model</h2>
           <div id="modelSelect" class="model-select" tabindex="0" title="Choose STT model">
+            <span id="modelIcon" class="icon-slot"></span>
             <span id="modelName" class="model-name"></span>
             <span id="modelLat" class="lat-chip hidden"></span>
             <span class="flex-spacer"></span>
@@ -129,11 +130,19 @@
             Smart cleanup — LLM fixes misheard words, grammar, false starts &amp; "no wait" corrections (slower)
           </label>
           <div class="field">
-            <label for="cleanupModel">Cleanup model</label>
-            <input id="cleanupModel" type="text" list="cleanupModels" spellcheck="false"
-                   placeholder="google/gemini-3.1-flash-lite"
-                   title="Any OpenRouter text model; empty restores the default" />
-            <datalist id="cleanupModels"></datalist>
+            <label>Cleanup model</label>
+            <div id="cleanupSelect" class="model-select" tabindex="0" title="Choose the Smart cleanup model">
+              <span id="cleanupIcon" class="icon-slot"></span>
+              <span id="cleanupName" class="model-name"></span>
+              <span id="cleanupPrice" class="lat-chip hidden"></span>
+              <span class="flex-spacer"></span>
+              <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+            <div id="cleanupMenu" class="model-menu hidden">
+              <input id="cleanupSearch" class="menu-search" type="text" spellcheck="false"
+                     placeholder="Search models, or paste a model id" />
+              <div id="cleanupRows"></div>
+            </div>
           </div>
         </section>
 

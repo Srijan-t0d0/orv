@@ -13,8 +13,8 @@ use objc::runtime::Object;
 use objc::{msg_send, sel, sel_impl};
 use tauri::{Manager, WebviewWindow, WindowEvent};
 
-/// Header band height in ui/style.css — the lights center within this.
-const HEADER_HEIGHT: f64 = 44.0;
+/// Header band height in ui/style.css, as zoomed — the lights center within this.
+const HEADER_HEIGHT: f64 = 44.0 * super::UI_ZOOM;
 const INSET_X: f64 = 14.0;
 
 #[repr(C)]

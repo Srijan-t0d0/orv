@@ -19,9 +19,11 @@ pub fn stop_listening(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Autocomplete for the cleanup-model field: OpenRouter's text models.
+/// Cleanup-model picker: OpenRouter's text models with prices.
 #[tauri::command]
-pub async fn list_cleanup_models(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+pub async fn list_cleanup_models(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::stt::client::ChatModel>, String> {
     state.stt.chat_models().await
 }
 

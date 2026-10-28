@@ -103,6 +103,24 @@ Output: Send it by Friday.
 OUTPUT: exactly the cleaned transcript and nothing else — no preamble, labels, quotes, \
 tags, commentary, or answers.";
 
+/// A cleanup-model picker entry.
+#[derive(Serialize)]
+pub struct ChatModel {
+    pub id: String,
+    pub name: String,
+    /// Display name of the model's maker ("Google").
+    pub provider: String,
+    /// Id prefix ("google"); keys the bundled provider icon.
+    pub author: String,
+    /// $ per million tokens; None when variable.
+    pub input_per_m: Option<f64>,
+    pub output_per_m: Option<f64>,
+    pub context: u64,
+    /// Always thinks before answering — slower cleanup.
+    pub reasoning_required: bool,
+    pub description: String,
+}
+
 /// A smart-corrections result with the same timing split as `Transcription`.
 pub struct Correction {
     pub text: String,
@@ -173,17 +191,35 @@ impl SttClient {
         });
     }
 
-    /// Text-output models usable for the cleanup pass, as (id, name).
-    pub async fn chat_models(&self) -> Result<Vec<(String, String)>, String> {
+    /// Text-output models usable for the cleanup pass.
+    pub async fn chat_models(&self) -> Result<Vec<ChatModel>, String> {
+        #[derive(Deserialize)]
+        struct Pricing {
+            prompt: String,
+            completion: String,
+        }
+        #[derive(Deserialize)]
+        struct Reasoning {
+            #[serde(default)]
+            mandatory: bool,
+        }
         #[derive(Deserialize)]
         struct Model {
             id: String,
             name: String,
+            #[serde(default)]
+            description: String,
+            #[serde(default)]
+            context_length: u64,
+            pricing: Pricing,
+            reasoning: Option<Reasoning>,
         }
         #[derive(Deserialize)]
         struct List {
             data: Vec<Model>,
         }
+        // $/token → $/M tokens; negative means variable (routers).
+        let per_m = |p: &str| p.parse::<f64>().ok().filter(|v| *v >= 0.0).map(|v| v * 1e6);
         let list: List = self
             .http
             .get(format!("{BASE_URL}/models"))
@@ -195,7 +231,29 @@ impl SttClient {
             .json()
             .await
             .map_err(|e| format!("bad model list: {e}"))?;
-        Ok(list.data.into_iter().map(|m| (m.id, m.name)).collect())
+        Ok(list
+            .data
+            .into_iter()
+            // Batch variants only run through the Batch API.
+            .filter(|m| !m.id.ends_with(":batch"))
+            .map(|m| {
+                let (provider, name) = match m.name.split_once(": ") {
+                    Some((p, n)) => (p.to_string(), n.to_string()),
+                    None => (String::new(), m.name.clone()),
+                };
+                ChatModel {
+                    author: m.id.trim_start_matches('~').split('/').next().unwrap_or("").into(),
+                    input_per_m: per_m(&m.pricing.prompt),
+                    output_per_m: per_m(&m.pricing.completion),
+                    context: m.context_length,
+                    reasoning_required: m.reasoning.is_some_and(|r| r.mandatory),
+                    description: m.description,
+                    id: m.id,
+                    name,
+                    provider,
+                }
+            })
+            .collect())
     }
 
     /// Every dedicated speech-to-text model OpenRouter currently serves.

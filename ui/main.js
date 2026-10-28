@@ -50,7 +50,12 @@ const launchAtLogin = $("launchAtLogin");
 const startMinimized = $("startMinimized");
 const cleanFillers = $("cleanFillers");
 const smartCorrections = $("smartCorrections");
-const cleanupModel = $("cleanupModel");
+const cleanupSelect = $("cleanupSelect");
+const cleanupMenu = $("cleanupMenu");
+const cleanupSearch = $("cleanupSearch");
+const DEFAULT_CLEANUP_MODEL = "google/gemini-3.1-flash-lite";
+let cleanupModels = [];
+let cleanupModel = DEFAULT_CLEANUP_MODEL;
 const accentInput = $("accent");
 const vocabInput = $("vocabInput");
 const vocabSuggestions = $("vocabSuggestions");
@@ -107,27 +112,39 @@ function showPartial(ev) {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
-// Per-stage timing: "stt 180/640 ms" = latency (first byte) / duration.
-function stageSpans(e) {
-  const ttfb = (v) => (v == null ? "–" : v);
-  let html = `<span title="speech-to-text latency / duration">stt ${ttfb(e.stt_ttfb_ms)}/${e.api_ms} ms</span>`;
+// Seconds read faster than thousands of milliseconds: "2.4s", "0.45s".
+const secs = (ms) => `${(ms / 1000).toFixed(ms < 1000 ? 2 : 1)}s`;
+const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+// The meta line under a transcript: the wait you felt, then where it went.
+// Each label's tooltip says what the number measures.
+function timingHtml(e, when) {
+  const slow = e.total_ms > 1200 ? " slow" : "";
+  const sttTip = `Speech-to-text (${e.model}) turning your ${e.audio_secs.toFixed(1)}s recording into text` +
+    (e.stt_ttfb_ms != null ? `; the server started replying after ${secs(e.stt_ttfb_ms)}` : "");
+  let cleanup = "";
   if (e.llm) {
-    const failed = e.llm.error ? " slow" : "";
-    html += `<span class="${failed}" title="${e.llm.model}${e.llm.error ? ` — ${e.llm.error.replace(/"/g, "&quot;")}` : ""}">llm ${ttfb(e.llm.ttfb_ms)}/${e.llm.ms} ms${e.llm.error ? " ✕" : ""}</span>`;
+    const tip = e.llm.error
+      ? `Smart cleanup failed, so the raw transcript was used: ${e.llm.error}`
+      : `Smart cleanup (${e.llm.model}) fixing the transcript` +
+        (e.llm.ttfb_ms != null ? `; its first words arrived after ${secs(e.llm.ttfb_ms)}` : "");
+    cleanup = `<span class="stage${e.llm.error ? " failed" : ""}" title="${attr(tip)}">` +
+      `Cleanup <b>${secs(e.llm.ms)}</b>${e.llm.error ? " · failed" : ""}</span>`;
   }
-  return html;
+  return `
+      ${when ? `<span>${when}</span>` : ""}
+      <span class="latency${slow}" title="From releasing the hotkey until the text was ready to insert">Total <b>${secs(e.total_ms)}</b></span>
+      <span class="stage" title="${attr(sttTip)}">Speech-to-text <b>${secs(e.api_ms)}</b></span>
+      ${cleanup}
+      <span title="Length of your recording">${e.audio_secs.toFixed(1)}s of audio</span>
+      <span class="model">${attr(e.model)}</span>`;
 }
 
 function addUtterance(ev) {
   const div = utteranceDiv(ev.id);
   div.classList.remove("partial");
-  const slow = ev.total_ms > 1200 ? " slow" : "";
   div.querySelector(".text").textContent = ev.text;
-  div.querySelector(".meta").innerHTML = `
-      <span class="latency${slow}">${ev.total_ms} ms</span>
-      ${stageSpans(ev)}
-      <span>${ev.audio_secs.toFixed(1)}s audio</span>
-      <span>${ev.model}</span>`;
+  div.querySelector(".meta").innerHTML = timingHtml(ev);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
   const best = liveLatency.get(ev.model);
@@ -142,6 +159,26 @@ function addError(msg) {
   div.textContent = msg;
   transcriptEl.appendChild(div);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+/* ── provider logos ───────────────────────────────────── */
+
+// Bundled in icons/providers/, keyed by model-id author ("google/…").
+const PROVIDER_ICONS = {
+  amazon: "png", anthropic: "svg", assemblyai: "png", "bytedance-seed": "png",
+  cohere: "png", deepgram: "svg", deepseek: "png", elevenlabs: "png",
+  "fish-audio": "png", google: "svg", inception: "svg", liquid: "png",
+  meta: "png", "meta-llama": "png", microsoft: "svg", minimax: "png",
+  mistralai: "png", moonshotai: "png", nousresearch: "png", nvidia: "png",
+  openai: "svg", perplexity: "svg", qwen: "png", stepfun: "png",
+  tencent: "png", "x-ai": "png", xiaomi: "png", "z-ai": "png",
+};
+
+function providerIcon(author, label) {
+  const ext = PROVIDER_ICONS[author];
+  if (!ext) return `<span class="prov-icon mono">${attr((label || author || "?")[0].toUpperCase())}</span>`;
+  const file = author === "meta-llama" ? "meta" : author;
+  return `<img class="prov-icon" src="icons/providers/${file}.${ext}" alt="">`;
 }
 
 /* ── model picker (custom dropdown) ───────────────────── */
@@ -162,6 +199,7 @@ function rowHtml(m) {
     (m.rtfx !== "—" ? ` · ${m.rtfx}x realtime` : "");
   return `
     <div class="model-row${m.id === currentModel ? " selected" : ""}" data-id="${m.id}" title="${tip}">
+      ${providerIcon(m.id.split("/")[0], m.provider)}
       <div class="row-main">
         <span class="row-name">${m.name}</span>
         <span class="row-note">${m.note}</span>
@@ -199,6 +237,7 @@ function renderModelMenu() {
 
 function renderModelBar() {
   const m = models.find((x) => x.id === currentModel);
+  $("modelIcon").innerHTML = providerIcon(currentModel.split("/")[0], m && m.provider);
   modelNameEl.textContent = m ? m.name : currentModel;
   const live = liveLatency.get(currentModel);
   modelLatEl.classList.toggle("hidden", !live);
@@ -219,6 +258,93 @@ function closeModelMenu() {
 
 modelSelect.addEventListener("click", () =>
   modelMenu.classList.contains("hidden") ? openModelMenu() : closeModelMenu());
+
+/* ── cleanup-model picker ─────────────────────────────── */
+
+// Fast, cheap, non-reasoning picks; dropped if OpenRouter retires them.
+const SUGGESTED_CLEANUP = [
+  "google/gemini-3.1-flash-lite", "openai/gpt-4.1-nano",
+  "mistralai/mistral-small-3.2-24b-instruct", "meta-llama/llama-3.3-70b-instruct",
+  "anthropic/claude-haiku-4.5",
+];
+
+// Cents, plus a third decimal only when it carries information ($0.075).
+const usd = (v) => {
+  const r = Math.round(v * 1000) / 1000;
+  return `$${r.toFixed(Math.round(r * 1000) % 10 ? 3 : 2)}`;
+};
+const ctx = (n) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}K`);
+
+function cleanupPriceHtml(m) {
+  if (m.input_per_m == null || m.output_per_m == null) return `<span class="price">varies</span>`;
+  if (m.input_per_m === 0 && m.output_per_m === 0) return `<span class="price free">Free</span>`;
+  return `<span class="price">in ${usd(m.input_per_m)}</span><span class="price">out ${usd(m.output_per_m)}</span>`;
+}
+
+function cleanupRowHtml(m) {
+  const tags = [m.provider, `${ctx(m.context)} context`].filter(Boolean).join(" · ");
+  return `
+    <div class="model-row${m.id === cleanupModel ? " selected" : ""}" data-id="${attr(m.id)}" title="${attr(m.description)}">
+      ${providerIcon(m.author, m.provider)}
+      <div class="row-main">
+        <span class="row-name">${attr(m.name)}${m.reasoning_required ? ` <span class="tag" title="Always reasons before answering, which makes cleanup slower">reasoning</span>` : ""}</span>
+        <span class="row-note">${attr(tags)} · ${attr(m.id)}</span>
+      </div>
+      <div class="row-price wide" title="Dollars per million input / output tokens">${cleanupPriceHtml(m)}</div>
+    </div>`;
+}
+
+function renderCleanupBar() {
+  const m = cleanupModels.find((x) => x.id === cleanupModel);
+  $("cleanupIcon").innerHTML = providerIcon(m ? m.author : cleanupModel.split("/")[0], m && m.provider);
+  $("cleanupName").textContent = m ? m.name : cleanupModel;
+  const price = $("cleanupPrice");
+  const priced = m && m.input_per_m != null && m.output_per_m != null;
+  price.classList.toggle("hidden", !priced);
+  if (priced) price.textContent = `${usd(m.input_per_m)} / ${usd(m.output_per_m)} per M`;
+}
+
+function renderCleanupMenu() {
+  const q = cleanupSearch.value.trim().toLowerCase();
+  const match = (m) => !q || `${m.name} ${m.provider} ${m.id}`.toLowerCase().includes(q);
+  const suggested = SUGGESTED_CLEANUP.map((id) => cleanupModels.find((m) => m.id === id)).filter((m) => m && match(m));
+  const rest = cleanupModels.filter((m) => !SUGGESTED_CLEANUP.includes(m.id) && match(m));
+  // Any OpenRouter id works, even one missing from the list.
+  const custom = q.includes("/") && !cleanupModels.some((m) => m.id === q)
+    ? `<div class="model-row" data-id="${attr(cleanupSearch.value.trim())}"><div class="row-main"><span class="row-name">Use “${attr(cleanupSearch.value.trim())}”</span><span class="row-note">Custom model id</span></div></div>`
+    : "";
+  $("cleanupRows").innerHTML = custom +
+    (suggested.length ? `<div class="menu-section">SUGGESTED · FAST AND CHEAP</div>` + suggested.map(cleanupRowHtml).join("") : "") +
+    (rest.length ? `<div class="menu-section">ALL MODELS · ${rest.length}</div>` + rest.map(cleanupRowHtml).join("") : "") +
+    (!custom && !suggested.length && !rest.length ? `<div class="menu-section">NO MATCHES</div>` : "");
+}
+
+function openCleanupMenu() {
+  cleanupSearch.value = "";
+  renderCleanupMenu();
+  cleanupMenu.classList.remove("hidden");
+  cleanupSelect.classList.add("open");
+  cleanupSearch.focus();
+  cleanupMenu.querySelector(".model-row.selected")?.scrollIntoView({ block: "nearest" });
+}
+
+function closeCleanupMenu() {
+  cleanupMenu.classList.add("hidden");
+  cleanupSelect.classList.remove("open");
+}
+
+cleanupSelect.addEventListener("click", () =>
+  cleanupMenu.classList.contains("hidden") ? openCleanupMenu() : closeCleanupMenu());
+cleanupSearch.addEventListener("input", renderCleanupMenu);
+cleanupSearch.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCleanupMenu(); });
+$("cleanupRows").addEventListener("click", (e) => {
+  const row = e.target.closest(".model-row");
+  if (!row) return;
+  cleanupModel = row.dataset.id;
+  closeCleanupMenu();
+  renderCleanupBar();
+  patchSettings();
+});
 
 /* ── view switching (main ⇄ settings) ─────────────────── */
 
@@ -292,7 +418,8 @@ function applySettings(s) {
   startMinimized.checked = s.start_minimized;
   cleanFillers.checked = s.clean_fillers;
   smartCorrections.checked = s.smart_corrections;
-  cleanupModel.value = s.cleanup_model;
+  cleanupModel = s.cleanup_model;
+  renderCleanupBar();
   accentInput.value = s.accent;
   vocabInput.value = (s.vocabulary || []).join(", ");
   seedCount.textContent = s.seed_count;
@@ -316,7 +443,7 @@ async function patchSettings() {
       clean_fillers: cleanFillers.checked,
       vocabulary: vocabInput.value.split(",").map((t) => t.trim()).filter(Boolean),
       smart_corrections: smartCorrections.checked,
-      cleanup_model: cleanupModel.value.trim(),
+      cleanup_model: cleanupModel,
       accent: accentInput.value.trim(),
     },
   });
@@ -336,13 +463,7 @@ function renderHistory(entries) {
     });
     div.innerHTML = `
       <div class="text"></div>
-      <div class="meta">
-        <span>${when}</span>
-        <span class="latency">${h.total_ms} ms</span>
-        ${stageSpans(h)}
-        <span>${h.audio_secs.toFixed(1)}s audio</span>
-        <span>${h.model}</span>
-      </div>`;
+      <div class="meta">${timingHtml(h, when)}</div>`;
     div.querySelector(".text").textContent = h.text;
     transcriptEl.appendChild(div);
   }
@@ -357,14 +478,9 @@ async function init() {
   ]);
   models = modelList;
   renderHistory(history);
-  // Autocomplete only; the field accepts any model id.
   invoke("list_cleanup_models").then((list) => {
-    $("cleanupModels").replaceChildren(...list.map(([id, name]) => {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.label = name;
-      return opt;
-    }));
+    cleanupModels = list;
+    renderCleanupBar();
   }).catch(() => {});
   renderBenchModelList();
 
@@ -437,7 +553,7 @@ modeSwitch.addEventListener("click", (e) => {
   patchSettings();
 });
 
-for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, cleanupModel, accentInput, vocabInput]) {
+for (const el of [deviceSel, languageInput, typeIntoApp, launchAtLogin, startMinimized, cleanFillers, smartCorrections, accentInput, vocabInput]) {
   el.addEventListener("change", patchSettings);
 }
 

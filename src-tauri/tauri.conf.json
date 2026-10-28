@@ -13,10 +13,10 @@
       {
         "label": "main",
         "title": "OpenRouter Voice",
-        "width": 620,
-        "height": 560,
-        "minWidth": 480,
-        "minHeight": 420,
+        "width": 720,
+        "height": 640,
+        "minWidth": 550,
+        "minHeight": 480,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": { "x": 14, "y": 16 }

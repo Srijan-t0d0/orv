@@ -228,13 +228,16 @@ h1 { font-size: 13.5px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 }
 .utterance .text { font-size: 13.5px; line-height: 1.55; }
 .utterance .meta {
-  display: flex; gap: 12px;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 10px;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  font-size: 12px;
   color: var(--faint);
 }
-.meta .latency { color: var(--positive); }
-.meta .latency.slow { color: var(--warning); }
+.meta b { font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; color: var(--muted); }
+.meta .latency b { color: var(--positive); }
+.meta .latency.slow b { color: var(--warning); }
+.meta .stage.failed { color: var(--warning); }
+.meta [title] { cursor: help; }
+.meta .model { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; }
 .meta .streaming { color: var(--volt); animation: pulse 1.2s ease-in-out infinite; }
 .utterance.partial .text { color: var(--muted); }
 .utterance.history { opacity: 0.75; }
@@ -572,4 +575,33 @@ button.danger:hover { border-color: var(--negative); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ── provider logos + cleanup picker ── */
+.prov-icon {
+  width: 20px; height: 20px; flex: none;
+  border-radius: 5px;
+  background: #fff;   /* black logos (OpenAI, Deepgram) stay visible in dark mode */
+  padding: 2px; box-sizing: border-box;
+  object-fit: contain;
+}
+.prov-icon.mono {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--card-hover); color: var(--muted);
+  font-size: 10px; font-weight: 600;
+}
+.icon-slot { display: contents; }
+.menu-search {
+  width: 100%; box-sizing: border-box;
+  margin: 2px 0 4px;
+  position: sticky; top: -5px; z-index: 1;
+  background: var(--ink);
+}
+.row-price.wide { width: 84px; }
+.row-price .price.free { color: var(--positive); }
+.tag {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--warning); border: 1px solid currentColor;
+  border-radius: 4px; padding: 0 4px; margin-left: 4px;
+  vertical-align: 1px;
 }
